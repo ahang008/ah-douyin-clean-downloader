@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare an authorized Douyin video for a single, corrected transcript deliverable."""
+"""Prepare an authorized Douyin video for corrected Markdown and SRT deliverables."""
 
 from __future__ import annotations
 
@@ -46,15 +46,18 @@ def require_command(name: str, message: str) -> str:
     return path
 
 
-def transcript_destination(output_root: Path, author: str, title: str, video_id: str) -> Path:
+def transcript_destinations(output_root: Path, author: str, title: str, video_id: str) -> dict[str, Path]:
     author_dir = DOWNLOADER.ensure_author_directory(output_root, author)
     base = f"{DOWNLOADER.safe_title(title, limit=64)}-{video_id}-校对后逐字稿"
-    candidate = author_dir / f"{base}.md"
+    stem = base
     number = 2
-    while candidate.exists():
-        candidate = author_dir / f"{base}-{number}.md"
+    while (author_dir / f"{stem}.md").exists() or (author_dir / f"{stem}.srt").exists():
+        stem = f"{base}-{number}"
         number += 1
-    return candidate
+    return {
+        "markdown": author_dir / f"{stem}.md",
+        "srt": author_dir / f"{stem}.srt",
+    }
 
 
 def prepare_transcript(args: argparse.Namespace) -> dict:
@@ -89,7 +92,7 @@ def prepare_transcript(args: argparse.Namespace) -> dict:
             "--output-name",
             "机器识别稿",
             "--output-format",
-            "txt",
+            "all",
             "--verbose",
             "False",
             "--condition-on-previous-text",
@@ -97,11 +100,18 @@ def prepare_transcript(args: argparse.Namespace) -> dict:
         ]
         result = subprocess.run(command, text=True, capture_output=True, check=False)
         draft_path = draft_dir / "机器识别稿.txt"
-        if result.returncode != 0 or not draft_path.is_file() or not draft_path.read_text(encoding="utf-8").strip():
+        draft_srt_path = draft_dir / "机器识别稿.srt"
+        if (
+            result.returncode != 0
+            or not draft_path.is_file()
+            or not draft_srt_path.is_file()
+            or not draft_path.read_text(encoding="utf-8").strip()
+            or not draft_srt_path.read_text(encoding="utf-8").strip()
+        ):
             detail = result.stderr.strip()[-500:] or result.stdout.strip()[-500:]
             raise DOWNLOADER.DownloadError("本地语音识别失败：" + detail)
 
-        final_path = transcript_destination(
+        final_paths = transcript_destinations(
             output_root,
             downloaded.get("author") or "",
             downloaded.get("title") or "未命名视频",
@@ -111,14 +121,16 @@ def prepare_transcript(args: argparse.Namespace) -> dict:
             "status": "draft_ready",
             "work_dir": str(work_dir),
             "draft_path": str(draft_path),
-            "final_path": str(final_path),
+            "draft_srt_path": str(draft_srt_path),
+            "final_path": str(final_paths["markdown"]),
+            "final_srt_path": str(final_paths["srt"]),
             "video_id": downloaded["video_id"],
             "title": downloaded.get("title"),
             "author": downloaded.get("author"),
             "duration_seconds": downloaded.get("duration_seconds"),
             "model": args.model,
             "paid_api_used": False,
-            "next_action": "校对机器识别稿并只写入 final_path，验收后删除 work_dir",
+            "next_action": "同步校对机器识别稿和 SRT 文本，写入 final_path 与 final_srt_path，验收后删除 work_dir",
         }
     except Exception:
         shutil.rmtree(work_dir, ignore_errors=True)

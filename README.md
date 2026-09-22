@@ -1,6 +1,6 @@
 # ah-douyin-clean-downloader
 
-把抖音分享口令或官方链接发给 Codex，可以下载平台提供的无抖音角标原视频，也可以只得到一份校对后的 Markdown 逐字稿。
+把抖音分享口令或官方链接发给 Codex，可以下载平台提供的无抖音角标原视频，也可以得到校对后的 Markdown 逐字稿和逐段时间码 SRT。
 
 这是 [阿杭 Skills](https://github.com/ahang008/ah-skills) 旗下的独立 Skill 仓库。
 
@@ -69,7 +69,7 @@ python3 "$SKILL_DIR/scripts/doctor.py" --format text
 
 安装完成后，直接把抖音分享口令发给 Codex 即可。纯链接或纯口令默认会执行下载；如果当次要分析或总结，需要在消息中明确说明。
 
-如果只要逐字稿，在口令后说明“提取逐字稿”。最终目录只保留一个校对后的 `.md` 文件，不保留视频、音频、字幕或识别结果。
+如果要逐字稿，在口令后说明“提取逐字稿”。最终目录只保留校对后的 `.md` 和逐段时间码 `.srt`，不保留视频、音频、JSON 或机器识别稿。
 
 ## 默认分类
 
@@ -108,7 +108,7 @@ python3 scripts/download_douyin.py "<分享口令>"
 python3 scripts/transcribe_douyin.py "<完整抖音分享口令或链接>"
 ```
 
-该命令生成临时机器识别稿，供 Codex 完成语义校对。校对成品写入脚本返回的 `final_path` 后，必须清理 `work_dir`，因此用户最终只会得到校对后的 Markdown 逐字稿。
+该命令生成临时机器识别稿和 SRT，供 Codex 完成语义校对。成品写入脚本返回的 `final_path` 与 `final_srt_path` 后，必须清理 `work_dir`，因此用户最终只会得到校对后的 Markdown 逐字稿和逐段时间码 SRT。
 
 ## 测试
 

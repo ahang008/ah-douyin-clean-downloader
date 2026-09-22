@@ -15,22 +15,26 @@ SPEC.loader.exec_module(MODULE)
 
 
 class TranscriptTests(unittest.TestCase):
-    def test_final_deliverable_is_only_markdown(self) -> None:
+    def test_final_deliverables_are_markdown_and_srt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             output = Path(temp_name)
-            result = MODULE.transcript_destination(output, "作者", "标题", "7123456789012345678")
-            self.assertEqual(result.suffix, ".md")
-            self.assertIn("校对后逐字稿", result.name)
-            self.assertEqual(result.parent.name, "作者")
+            result = MODULE.transcript_destinations(output, "作者", "标题", "7123456789012345678")
+            self.assertEqual(set(result), {"markdown", "srt"})
+            self.assertEqual(result["markdown"].suffix, ".md")
+            self.assertEqual(result["srt"].suffix, ".srt")
+            self.assertEqual(result["markdown"].stem, result["srt"].stem)
+            self.assertIn("校对后逐字稿", result["markdown"].name)
+            self.assertEqual(result["markdown"].parent.name, "作者")
 
     def test_final_path_does_not_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as temp_name:
             output = Path(temp_name)
-            first = MODULE.transcript_destination(output, "作者", "标题", "7123456789012345678")
-            first.touch()
-            second = MODULE.transcript_destination(output, "作者", "标题", "7123456789012345678")
-            self.assertNotEqual(first, second)
-            self.assertTrue(second.name.endswith("-2.md"))
+            first = MODULE.transcript_destinations(output, "作者", "标题", "7123456789012345678")
+            first["srt"].touch()
+            second = MODULE.transcript_destinations(output, "作者", "标题", "7123456789012345678")
+            self.assertNotEqual(first["markdown"], second["markdown"])
+            self.assertTrue(second["markdown"].name.endswith("-2.md"))
+            self.assertTrue(second["srt"].name.endswith("-2.srt"))
 
     def test_cleanup_rejects_arbitrary_directory(self) -> None:
         with tempfile.TemporaryDirectory(prefix="not-owned-") as temp_name:
