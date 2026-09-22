@@ -1,6 +1,6 @@
 interface:
   display_name: "AH 抖音下载与逐字稿"
-  short_description: "下载抖音原视频，或只交付校对后的逐字稿"
+  short_description: "下载抖音原视频，或交付校对逐字稿与 SRT"
   default_prompt: "Use $ah-douyin-clean-downloader to process this authorized Douyin video."
 policy:
   allow_implicit_invocation: true
