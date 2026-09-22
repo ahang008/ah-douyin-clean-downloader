@@ -15,6 +15,8 @@ def build_report() -> dict:
     python_ok = sys.version_info >= (3, 9)
     curl = shutil.which("curl")
     ffprobe = shutil.which("ffprobe")
+    ffmpeg = shutil.which("ffmpeg")
+    mlx_whisper = shutil.which("mlx_whisper")
     return {
         "status": "ok" if python_ok and curl else "needs_attention",
         "python": {
@@ -29,6 +31,12 @@ def build_report() -> dict:
             "ok": bool(ffprobe),
             "fallback": "mp4_header_only" if not ffprobe else None,
         },
+        "transcription": {
+            "available": bool(ffmpeg and mlx_whisper),
+            "ffmpeg": ffmpeg,
+            "mlx_whisper": mlx_whisper,
+            "required_for_download": False,
+        },
         "default_output": str(library),
         "default_output_exists": library.exists(),
         "network_checked": False,
@@ -42,6 +50,7 @@ def format_text(report: dict) -> str:
         f"python: {report['python']['version']} ({'ok' if report['python']['ok'] else 'too old'})",
         f"curl: {report['curl']['path'] or 'missing'}",
         f"ffprobe: {report['ffprobe']['path'] or 'missing; MP4 header fallback will be used'}",
+        f"local transcription: {'available' if report['transcription']['available'] else 'unavailable'}",
         f"default output: {report['default_output']}",
         "network checked: no",
         "paid API required: no",

@@ -1,10 +1,10 @@
 # ah-douyin-clean-downloader
 
-把抖音分享口令或官方链接发给 Codex，解析平台提供的无抖音角标播放源，将原始 MP4 保存到桌面媒体库，并按博主自动建立文件夹分类。
+把抖音分享口令或官方链接发给 Codex，可以下载平台提供的无抖音角标原视频，也可以只得到一份校对后的 Markdown 逐字稿。
 
 这是 [阿杭 Skills](https://github.com/ahang008/ah-skills) 旗下的独立 Skill 仓库。
 
-该工具不转码，不使用付费解析 API，不调用视觉模型，不保存 Cookie、账号或密钥。
+该工具不使用付费解析或语音识别 API，不调用视觉模型，不保存 Cookie、账号或密钥。逐字稿使用本地 Whisper 识别，过程视频和机器稿在成品验收后清理。
 
 ![工作流](assets/workflow.png)
 
@@ -41,6 +41,7 @@ python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-installer/scripts/inst
 - Python 3.9 或更高版本。
 - `curl`，用于访问分享页、元数据和视频源。
 - `ffprobe` 可选，安装后可验证时长、编码和音视频流。
+- 逐字稿模式额外需要 `ffmpeg`、`mlx_whisper` 和本地 Whisper 模型。
 - macOS、Linux 或带 Python 和 curl 的 Windows 环境。
 
 ## 安装为 Codex Skill
@@ -67,6 +68,8 @@ python3 "$SKILL_DIR/scripts/doctor.py" --format text
 ```
 
 安装完成后，直接把抖音分享口令发给 Codex 即可。纯链接或纯口令默认会执行下载；如果当次要分析或总结，需要在消息中明确说明。
+
+如果只要逐字稿，在口令后说明“提取逐字稿”。最终目录只保留一个校对后的 `.md` 文件，不保留视频、音频、字幕或识别结果。
 
 ## 默认分类
 
@@ -98,6 +101,14 @@ python3 scripts/download_douyin.py "<分享口令>"
 ```
 
 脚本成功时输出 JSON，包含媒体库路径、博主文件夹、视频绝对路径、大小、时长、编码和音视频流数量。
+
+只生成逐字稿：
+
+```bash
+python3 scripts/transcribe_douyin.py "<完整抖音分享口令或链接>"
+```
+
+该命令生成临时机器识别稿，供 Codex 完成语义校对。校对成品写入脚本返回的 `final_path` 后，必须清理 `work_dir`，因此用户最终只会得到校对后的 Markdown 逐字稿。
 
 ## 测试
 
