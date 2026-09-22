@@ -19,6 +19,7 @@ class SkillPackageTests(unittest.TestCase):
             "agents/openai.yaml",
             "scripts/download_douyin.py",
             "scripts/doctor.py",
+            "scripts/transcribe_douyin.py",
         )
         missing = [name for name in required if not (ROOT / name).is_file()]
         self.assertEqual(missing, [])
@@ -31,6 +32,7 @@ class SkillPackageTests(unittest.TestCase):
         self.assertIn("${CODEX_HOME:-$HOME/.codex}", text)
         self.assertIn("用户只发送一条抖音官方链接", text)
         self.assertIn("抖音无水印视频/<博主昵称>", text)
+        self.assertIn("校对后的逐字稿", text)
         self.assertNotIn("/Users/", text)
 
     def test_direct_github_install_contract(self) -> None:
