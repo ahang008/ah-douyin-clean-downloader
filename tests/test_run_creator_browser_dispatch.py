@@ -126,7 +126,7 @@ class BrowserDispatchFixtures(unittest.TestCase):
         directory = self.root / "local-transcripts" / video_id
         directory.mkdir(parents=True)
         for name in ("01-本地ASR机器逐字稿.md", "01-本地ASR机器逐字稿.srt", "01-本地ASR识别证据.json"):
-            (directory / name).write_text("offline fixture")
+            (directory / name).write_text("{}" if name.endswith(".json") else "offline fixture")
         (directory.parent / "_batch-state.json").write_text(json.dumps({"jobs": {
             video_id: {"status": "machine_draft_saved"}}}))
 

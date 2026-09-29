@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -21,6 +22,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 POST_URL = "https://www.douyin.com/aweme/v1/web/aweme/post/"
+_METRICS_SPEC = importlib.util.spec_from_file_location("ah_douyin_capture_metrics", Path(__file__).with_name("work_metrics.py"))
+WORK_METRICS = importlib.util.module_from_spec(_METRICS_SPEC)
+_METRICS_SPEC.loader.exec_module(WORK_METRICS)
 
 
 class CaptureValidationError(ValueError):
@@ -82,7 +86,7 @@ def official_request_cursor(url, sec_uid):
     return int(raw[0])
 
 
-def normalize_work(row, sec_uid):
+def normalize_work(row, sec_uid, captured_at=None):
     if not isinstance(row, dict):
         raise CaptureValidationError("work_not_object")
     author = row.get("author") or {}
@@ -98,7 +102,7 @@ def normalize_work(row, sec_uid):
         raise CaptureValidationError("video_wrong_shape")
     is_video = row.get("aweme_type", 0) in (0, 4) and not row.get("images")
     canonical = "https://www.douyin.com/" + ("video/" if is_video else "note/") + video_id
-    return {
+    work = {
         "video_id": video_id, "source_url": canonical, "canonical_url": canonical,
         "title": row.get("desc") or "", "create_time": row.get("create_time"),
         "duration_ms": video.get("duration") or row.get("duration"),
@@ -106,6 +110,8 @@ def normalize_work(row, sec_uid):
         "is_pinned": bool(row.get("is_top") or row.get("is_top_video")),
         "author": {key: author.get(key) for key in ("uid", "sec_uid", "nickname", "unique_id", "short_id")},
     }
+    work.update(WORK_METRICS.statistics_extension(row, captured_at=captured_at))
+    return work
 
 
 def public_projection(payload, works):
@@ -117,6 +123,7 @@ def public_projection(payload, works):
                "create_time": work["create_time"], "aweme_type": work["aweme_type"],
                "is_top": work["is_pinned"], "author": work["author"],
                "video": {"duration": work["duration_ms"]}}
+        row.update({key: work[key] for key in WORK_METRICS.STATISTICS_EXTENSION_KEYS if key in work})
         if not work["is_video"]:
             row["images"] = [{"public_image_work": True}]
         rows.append(row)
@@ -153,7 +160,8 @@ class BrowserCatalog:
         if isinstance(returned, bool) or not re.fullmatch(r"\d+", str(returned)):
             raise CaptureValidationError("cursor_invalid")
         returned = int(returned)
-        works = [normalize_work(row, self.sec_uid) for row in payload["aweme_list"]]
+        captured_at = now()
+        works = [normalize_work(row, self.sec_uid, captured_at=captured_at) for row in payload["aweme_list"]]
         if requested_cursor == 0 and not works:
             raise CaptureValidationError("empty_first_page")
         if payload.get("not_login_module") is not None and not isinstance(payload.get("not_login_module"), dict):
@@ -181,7 +189,7 @@ class BrowserCatalog:
         self.pages[requested_cursor] = {
             "requested_cursor": requested_cursor, "returned_cursor": returned,
             "has_more": bool(payload["has_more"]), "works": works, "filtered": filtered,
-            "semantic": semantic, "captured_at": now(), "file": str(page_file),
+            "semantic": semantic, "captured_at": captured_at, "file": str(page_file),
             "payload_sha256": hashlib.sha256(raw).hexdigest(),
             "saved_file_sha256": hashlib.sha256(page_file.read_bytes()).hexdigest(),
         }
