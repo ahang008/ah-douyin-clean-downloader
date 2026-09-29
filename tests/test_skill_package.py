@@ -22,6 +22,7 @@ class SkillPackageTests(unittest.TestCase):
             "scripts/transcribe_douyin.py",
             "scripts/run_creator.py",
             "scripts/export_transcripts.py",
+            "scripts/batch_rewrite.py",
             "scripts/requirements-lock.txt",
             "references/single-transcript.md",
             "references/creator-batch.md",
