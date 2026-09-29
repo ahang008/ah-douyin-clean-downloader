@@ -1,6 +1,6 @@
 interface:
-  display_name: "AH 抖音下载、逐字稿与整号归档"
-  short_description: "下载原片、校对单条逐字稿，或批量按公开指标归档作品"
-  default_prompt: "使用 $ah-douyin-clean-downloader 按我的要求处理获授权的抖音视频或博主主页，下载原片、生成逐字稿，批量时采集公开指标并命名对应文件。"
+  display_name: "AH 抖音下载、逐字稿与批量改写"
+  short_description: "下载原片、校对逐字稿，整号归档后按点赞批量重写口播稿"
+  default_prompt: "使用 $ah-douyin-clean-downloader 按我的要求下载获授权的抖音内容、生成逐字稿，或把已有资料库按点赞排序批量改写成我的口播稿。"
 policy:
   allow_implicit_invocation: true

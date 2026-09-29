@@ -14,6 +14,9 @@ media/
 local-transcripts/
 catalog/
 logs/
+rewrites/
+rewrite-work/
+rewrite-output/
 *.wav
 *.mp3
 *.m4a

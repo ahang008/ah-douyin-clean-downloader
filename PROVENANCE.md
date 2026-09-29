@@ -8,6 +8,11 @@ the platform-provided playback file on their Desktop. Version 0.3.0 also accepts
 an authorized creator profile/card and builds a resumable local video and raw
 transcript library.
 
+Version 0.4.0 adds optional ranked rewriting of that completed library. Its
+preparation, opening locks, document rendering, and integrity checks were
+developed from this project's authorized local batch workflow. They do not
+contain the source author's videos, transcripts, or rewritten drafts.
+
 The first source-available release was prepared on 2026-09-20. The implementation
 in `scripts/download_douyin.py`, the Skill instructions, tests, and release
 documentation were written for this project. No upstream source files are
@@ -28,6 +33,10 @@ entry point. They reuse the same downloader and cached Whisper model family.
   the consolidated release.
 - Apply the local `skill-creator` instructions to the router, progressive
   references, UI metadata, and validation. No Skill Creator source is bundled.
+- Keep deterministic rewrite preparation and rendering separate from model
+  authorship. Rankings use observed public counters; a selection score is not
+  an inferred playback count. Structural checks do not certify semantic
+  accuracy or firsthand experience.
 
 ## Public projects consulted
 
