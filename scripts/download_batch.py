@@ -30,6 +30,9 @@ from typing import Any, Callable, Optional
 from urllib.parse import quote, urlparse
 
 DEFAULT_BACKEND = Path(__file__).resolve().parent / "download_douyin.py"
+_METRICS_SPEC = importlib.util.spec_from_file_location("ah_douyin_download_metrics", Path(__file__).with_name("work_metrics.py"))
+WORK_METRICS = importlib.util.module_from_spec(_METRICS_SPEC)
+_METRICS_SPEC.loader.exec_module(WORK_METRICS)
 VIDEO_ID = re.compile(r"^\d{16,22}$")
 VIDEO_PATH = re.compile(r"/(?:video|note)/(\d{16,22})(?:[/?#]|$)")
 
@@ -141,6 +144,7 @@ def normalize_catalog(payload: Any) -> tuple[list[dict], dict]:
             unique[video_id] = {"video_id": video_id, "canonical_url": canonical_url(video_id),
                                 "source_url": canonical_url(video_id),
                                 "catalog_title": str(row.get("title") or row.get("desc") or "")[:1000]}
+            unique[video_id].update(WORK_METRICS.statistics_extension(row))
     if not unique:
         raise ValueError("Catalog contains no recognized video IDs")
     meta.update({"input_rows": len(rows), "unique_videos": len(unique),

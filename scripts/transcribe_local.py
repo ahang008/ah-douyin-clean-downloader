@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import fcntl
 import hashlib
 import importlib.metadata
+import importlib.util
 import json
 import math
 import os
@@ -33,6 +34,9 @@ OUTPUT_NAMES = {
     "srt": "01-本地ASR机器逐字稿.srt",
     "evidence": "01-本地ASR识别证据.json",
 }
+_PATH_SPEC = importlib.util.spec_from_file_location("local_asr_artifact_paths", Path(__file__).resolve().parent / "artifact_paths.py")
+_PATH_HELPER = importlib.util.module_from_spec(_PATH_SPEC)
+_PATH_SPEC.loader.exec_module(_PATH_HELPER)
 MEDIA_EXTENSIONS = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".mp3", ".wav", ".m4a", ".aac", ".flac"}
 
 
@@ -310,8 +314,9 @@ def resume_matches(directory: Path, media_hash: str, key: str) -> bool:
         return False
     if evidence.get("status") != "machine_draft_saved":
         return False
+    files = _PATH_HELPER.resolve_artifact_paths(directory, evidence)
     for kind in ("markdown", "srt"):
-        path = directory / OUTPUT_NAMES[kind]
+        path = files[kind]
         if not path.is_file() or sha256_file(path) != evidence.get("outputs", {}).get(kind, {}).get("sha256"):
             return False
     return True

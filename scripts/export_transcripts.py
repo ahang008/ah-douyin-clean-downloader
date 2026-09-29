@@ -32,6 +32,10 @@ def load_local_helper(filename, module_name):
     return module
 
 
+PATHS = load_local_helper("artifact_paths.py", "corpus_artifact_paths")
+METRICS = load_local_helper("work_metrics.py", "corpus_public_metrics")
+
+
 def read_json(path):
     return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
 
@@ -144,7 +148,7 @@ def readiness(args, videos):
     for row in videos:
         video_id = row["video_id"]
         directory = args.root / "local-transcripts" / video_id
-        files = [directory / name for name in OUTPUT_NAMES.values()]
+        files = list(PATHS.resolve_artifact_paths(directory).values())
         media = manifest.get(video_id, {})
         complete = jobs.get(video_id, {}).get("status") in SUCCESS and all(path.is_file() and path.stat().st_size for path in files)
         complete = complete and media.get("status") == "verified" and bool(media.get("path")) and Path(media["path"]).is_file()
@@ -161,7 +165,7 @@ def collect_existing_text(args, catalog, videos, manifest):
     for number, row in enumerate(videos, 1):
         video_id = row["video_id"]
         directory = args.root / "local-transcripts" / video_id
-        files = {kind: directory / name for kind, name in OUTPUT_NAMES.items()}
+        files = PATHS.resolve_artifact_paths(directory)
         if any(args.root not in path.resolve().parents for path in files.values()):
             raise ValueError("ASR input path leaves the selected creator library")
         evidence = read_json(files["evidence"])
@@ -206,7 +210,7 @@ def collect_existing_text(args, catalog, videos, manifest):
         source = "https://www.douyin.com/video/" + video_id
         if evidence.get("source_url") != source:
             raise ValueError("ASR canonical source identity differs for " + video_id)
-        records.append({
+        record = {
             "order": number, "video_id": video_id, "title": row.get("title") or evidence.get("title") or video_id,
             "official_url": source, "author": catalog.get("creator", {}).get("nickname") or "抖音作者",
             "original_video_path": str(Path(manifest[video_id]["path"]).resolve()),
@@ -217,7 +221,12 @@ def collect_existing_text(args, catalog, videos, manifest):
             "source_catalog_sha256": args.catalog_sha256,
             "source_media_sha256": recorded_sha,
             "asr_warnings": validation.get("warnings", []),
-        })
+        }
+        if "statistics" in row:
+            record.update({key: row.get(key) for key in
+                           ("statistics", "statistics_availability", "statistics_captured_at")})
+            record["create_time"] = row.get("create_time")
+        records.append(record)
         bodies.append(body)
     return records, bodies
 
@@ -238,8 +247,14 @@ def render_markdown(records, bodies, catalog_sha256):
         lines.extend([f"\n---\n\n<a id=\"video-{row['video_id']}\"></a>\n\n",
                       f"## {row['order']:03d} · {title}\n\n",
                       f"视频 ID：{row['video_id']} · [官方作品]({row['official_url']})\n\n",
-                      f"[原片](<{row['original_video_path']}>) · [原始机器稿](<{row['transcript_path']}>) · [SRT](<{row['srt_path']}>) · [识别证据](<{row['asr_evidence_path']}>)\n\n",
-                      body.rstrip("\n") + "\n"])
+                      f"[原片](<{row['original_video_path']}>) · [原始机器稿](<{row['transcript_path']}>) · [SRT](<{row['srt_path']}>) · [识别证据](<{row['asr_evidence_path']}>)\n\n"])
+        if "statistics" in row:
+            lines.append("公开指标快照：赞 " + METRICS.metric_text(row, "digg_count") +
+                         " · 评 " + METRICS.metric_text(row, "comment_count") +
+                         " · 藏 " + METRICS.metric_text(row, "collect_count") +
+                         " · 转 " + METRICS.metric_text(row, "share_count") +
+                         " · 采集时间 " + str(row.get("statistics_captured_at") or "未获取") + "\n\n")
+        lines.append(body.rstrip("\n") + "\n")
     return "".join(lines)
 
 

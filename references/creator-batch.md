@@ -34,9 +34,11 @@ SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/ah-douyin-clean-downloader"
 
 首次打开专用 Edge 官方页面时，用户用手机抖音“扫一扫”扫描二维码，并在手机确认登录或按平台提示完成验证；二维码失效时先点“点击刷新”。聊天中的“同意”只是授权，不是登录已完成的证据。模型无需 Computer Use。
 
-网页 SDK 发出目标作者分页，脚本采集公开响应的必要字段和游标证据。完整目录会缓存；中断后执行同一命令，已通过源文件、输出与设置校验的原片和机器稿会跳过。运行中的同一资料库无需重复启动。
+网页 SDK 发出目标作者分页，脚本采集公开响应的必要字段、可用计数和游标证据。每页记录一次指标观察时间，不保存完整响应中的私人字段。完整目录会缓存；中断后执行同一命令，已通过源文件、输出与设置校验的原片和机器稿会跳过。运行中的同一资料库无需重复启动。
 
 要纳入新作品，在原命令加 `--refresh-catalog`。采集重新从游标 0 建链，完整后更新主目录；失败保留已有目录和已完成文件，不能用旧目录替本次失败宣称刷新成功。
+
+只更新已有库的公开指标与文件名，在原命令加 `--stage collect --refresh-catalog`。它会采集完整公开目录，再离线同步已有文件名、指标表和索引；已有全部机器稿通过校验时也会重建合集。新出现的视频会记录在目录里，需运行默认全流程才会下载和转写。
 
 默认并行下载与单路本地识别；下载收尾后会重新读取最终媒体清单，处理最后一轮新增的已校验媒体。若终止时仍有不可用媒体或识别失败，报告未完成并以非零状态退出，保留成果供续跑。
 
@@ -48,12 +50,12 @@ SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/ah-douyin-clean-downloader"
 | `--root DIR` | 必填，持久化资料库目录 |
 | `--catalog FILE` | 指定目录文件，默认 `ROOT/catalog/catalog.json` |
 | `--stage all` | 默认，采集、下载、本地识别及成功后的合集导出 |
-| `--stage collect` | 只采集公开目录 |
+| `--stage collect` | 采集公开目录和指标，并同步已有文件名、索引及就绪合集；不下载或识别新作品 |
 | `--stage download` | 只下载目录内视频 |
 | `--stage transcribe` | 只处理已有已校验媒体，不需要浏览器 |
 | `--stage status` | 读取摘要和检查点，查看当前进度 |
 | `--stage doctor` | 检查本地运行条件 |
-| `--refresh-catalog` | 重新采集，纳入新公开作品 |
+| `--refresh-catalog` | 重新采集公开作品及其指标快照 |
 | `--limit N` | 正数为样本模式，0 为全部；样本成功不能称全量完成 |
 | `--workers N` | 下载并发，默认 2；本地识别仍单路执行 |
 | `--serial` | 下载全部结束后再识别 |
@@ -77,17 +79,19 @@ creator-library/
   catalog/catalog-capture-*.json     未完成的新采集
   catalog/catalog-attempt-*.json     采集失败记录
   catalog/transcripts-N.jsonl        N 条机器正文与本地来源映射
-  media/<作者>/*.mp4                下载源原片，保留
+  catalog/作品数据指标.csv            指标、观察时间、可用性与本地路径
+  media/<作者>/赞1234_评56_藏78_转90_标题-ID.mp4
   media/download-manifest.json       逐条下载状态、SHA256、时长和音视频检查
   local-transcripts/<视频ID>/
-    01-本地ASR机器逐字稿.md
-    01-本地ASR机器逐字稿.srt
+    赞1234_评56_藏78_转90_标题-ID.md
+    赞1234_评56_藏78_转90_标题-ID.srt
     01-本地ASR识别证据.json          原始文本、片段、置信提示和源文件/模型信息
   local-transcripts/_batch-state.json
   <作者>-N条机器逐字稿合集.md         按实际条数合并的完整机器正文
   视频与逐字稿索引.md                原片、机器稿、字幕的本地链接
   pipeline-summary.json
   pipeline-run.json
+  _artifact-name-journal.json        仅改名中断时存在，续跑先恢复
   logs/collect.log
   logs/download.log
   logs/transcribe.log
@@ -95,6 +99,16 @@ creator-library/
 ```
 
 全量流程成功后自动调用 `scripts/export_transcripts.py`，按当前目录中实际通过校验的 N 条视频生成泛型作者合集与 JSONL。原片、单篇 Markdown、SRT 和证据保留；合集不替代逐篇记录。不要把样本合集或旧合集当作全量验收。
+
+### 指标与文件名
+
+默认名称为 `赞{点赞}_评{评论}_藏{收藏}_转{分享}_{标题}-{视频ID}`，MP4、Markdown 和 SRT 使用相同 stem。这里的“转”使用公开 `share_count`；另有 `forward_count` 时独立保留。非法文件名字符会清理，过长标题按 UTF-8 字节截短，视频 ID 始终保留。
+
+计数只接受有效的非负整数。字段缺失或无效写 `null`，文件名和表格显示“未获取”；真正返回的互动计数 `0` 仍为 `0`。其他公开字段包括播放、转发、下载计数，是否可用逐项记录；播放占位零记录为 `zero_unverified`，不作为真实播放 0。数据来自官方网页公开观察，不能据此声称作者后台的完播率、转化、收入等信息已取得。
+
+`statistics_captured_at` 为 UTC 观察时间，`statistics_availability` 说明每个字段的可用性。摘要的 `public_metrics` 分别统计各字段已获取与未知数量，不能把 `catalog_complete=true` 理解为所有指标齐全。计数变化需要显式完整刷新；未完成的新采集不会替换旧指标或旧文件名。
+
+实际改名在所有媒体写入者退出后进行，更新媒体清单、识别证据的媒体路径和输出路径，保留原片、正文与字幕的字节及校验值。识别证据保持固定名称，视频 ID 子目录稳定；读取旧目录时仍支持原 `01-本地ASR机器逐字稿.md/.srt`。改名恢复记录用于中断后的前滚恢复，同一命令可继续完成，不需要重新识别。机器稿正文仍保留原生成时元信息，最新文件链接以索引与 JSONL 为准。
 
 已完成资料库可单独重建合集，不重新下载或识别：
 

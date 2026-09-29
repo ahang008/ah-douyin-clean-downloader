@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import csv
 from datetime import datetime, timezone
 import fcntl
 import importlib.util
@@ -26,6 +27,18 @@ from urllib.parse import urlparse
 SCRIPTS = Path(__file__).resolve().parent
 ACTIVE: list[subprocess.Popen] = []
 SUCCESS_ASR = {"machine_draft_saved", "skipped_verified"}
+
+
+def local_helper(filename: str, name: str):
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS / filename)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+PATHS = local_helper("artifact_paths.py", "creator_artifact_paths")
+METRICS = local_helper("work_metrics.py", "creator_public_metrics")
+NAMING = local_helper("name_artifacts.py", "creator_artifact_naming")
 
 
 def now() -> str:
@@ -59,6 +72,17 @@ def rows(catalog: dict) -> list[dict]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
+def transcript_files(directory: Path) -> dict[str, Path]:
+    return PATHS.resolve_artifact_paths(directory)
+
+
+def transcript_present(directory: Path) -> bool:
+    try:
+        return all(path.is_file() and path.stat().st_size for path in transcript_files(directory).values())
+    except (OSError, ValueError):
+        return False
+
+
 def snapshot(root: Path, catalog_path: Path, limit: int = 0) -> dict:
     catalog = load_json(catalog_path)
     records = rows(catalog)
@@ -75,15 +99,13 @@ def snapshot(root: Path, catalog_path: Path, limit: int = 0) -> dict:
     for video_id in ids:
         entry = transcripts.get(video_id, {})
         directory = root / "local-transcripts" / video_id
-        files = [directory / name for name in
-                 ("01-本地ASR机器逐字稿.md", "01-本地ASR机器逐字稿.srt", "01-本地ASR识别证据.json")]
-        if entry.get("status") in SUCCESS_ASR and all(path.is_file() and path.stat().st_size for path in files):
+        if entry.get("status") in SUCCESS_ASR and transcript_present(directory):
             transcribed.add(video_id)
     catalog_complete = catalog.get("catalog_complete", catalog.get("complete")) is True
     library_downloads = {video_id for video_id, entry in downloads.items() if entry.get("status") == "verified"
                          and entry.get("path") and Path(entry["path"]).is_file()}
     library_transcripts = {video_id for video_id, entry in transcripts.items() if entry.get("status") in SUCCESS_ASR
-                           and (root / "local-transcripts" / video_id / "01-本地ASR机器逐字稿.md").is_file()}
+                           and transcript_present(root / "local-transcripts" / video_id)}
     summary = {
         "updated_at": now(), "root": str(root), "catalog_path": str(catalog_path),
         "catalog_complete": catalog_complete, "catalog_video_count": len(records),
@@ -99,6 +121,7 @@ def snapshot(root: Path, catalog_path: Path, limit: int = 0) -> dict:
         "all_public_videos_downloaded": bool(ids) and catalog_complete and not limit and ids == verified,
         "all_public_videos_transcribed": bool(ids) and catalog_complete and not limit and ids == verified == transcribed,
         "transcript_review_status": "raw_machine_output_not_audio_proofread",
+        "public_metrics": METRICS.metrics_summary(records),
         "runtime": {"online_llm_calls": 0, "computer_use_calls": 0, "paid_asr_calls": 0},
     }
     atomic_json(root / "pipeline-summary.json", summary)
@@ -114,21 +137,60 @@ def write_library_index(root: Path, catalog_path: Path) -> None:
     heading = ("# 视频与机器逐字稿索引\n\n生成时间：" + now() +
                "\n\n逐字稿为本地机器识别，未统一做人工听音校对。目录 complete=" +
                str(catalog.get("catalog_complete", catalog.get("complete", False))).lower() +
-               "。已知链接可能多于尚未采集完整的分页目录。\n\n")
-    lines = [heading, "| 视频 ID | 标题 | 原视频 | 机器逐字稿 | SRT |\n| --- | --- | --- | --- | --- |\n"]
+               "。已知链接可能多于尚未采集完整的分页目录。\n\n"
+               "指标为官方网页采集时的公开计数快照；未获取不等于 0。文件名使用点赞、评论、收藏、分享四项，播放量占位零视为未核实。\n\n")
+    lines = [heading, "| 视频 ID | 标题 | 赞 | 评 | 藏 | 转 | 指标采集时间 | 原视频 | 机器逐字稿 | SRT |\n"
+             "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"]
+    metric_keys = ("digg_count", "comment_count", "collect_count", "share_count", "play_count", "forward_count", "download_count")
+    csv_rows = []
     for video_id in dict.fromkeys([*metadata, *downloads]):
         download = downloads.get(video_id, {})
         title = str(download.get("title") or metadata.get(video_id, {}).get("title") or "").replace("|", "\\|").replace("\n", " ")[:160]
         media = Path(download["path"]) if download.get("path") else None
         video_link = f"[查看原片](<{media}>)" if media and media.is_file() else download.get("status", "待下载")
         directory = root / "local-transcripts" / video_id
-        md, srt = directory / "01-本地ASR机器逐字稿.md", directory / "01-本地ASR机器逐字稿.srt"
-        transcript_link = f"[逐字稿](<{md}>)" if md.is_file() else jobs.get(video_id, {}).get("status", "待识别")
-        subtitle_link = f"[字幕](<{srt}>)" if srt.is_file() else "—"
-        lines.append(f"| [{video_id}](https://www.douyin.com/video/{video_id}) | {title} | {video_link} | {transcript_link} | {subtitle_link} |\n")
+        path_error = False
+        try:
+            files = transcript_files(directory)
+        except (OSError, ValueError):
+            files, path_error = {}, True
+        md, srt = files.get("markdown"), files.get("srt")
+        transcript_link = ("路径待核验" if path_error else
+                           f"[逐字稿](<{md}>)" if md and md.is_file() else jobs.get(video_id, {}).get("status", "待识别"))
+        subtitle_link = "路径待核验" if path_error else f"[字幕](<{srt}>)" if srt and srt.is_file() else "—"
+        work = metadata.get(video_id, {})
+        values = [METRICS.metric_text(work, key) for key in metric_keys]
+        captured_at = work.get("statistics_captured_at") or "未获取"
+        lines.append(f"| [{video_id}](https://www.douyin.com/video/{video_id}) | {title} | " +
+                     " | ".join(values[:4]) + f" | {captured_at} | {video_link} | {transcript_link} | {subtitle_link} |\n")
+        published_at = "未获取"
+        created = work.get("create_time")
+        if isinstance(created, int) and not isinstance(created, bool) and created > 0:
+            try:
+                published_at = datetime.fromtimestamp(created, timezone.utc).isoformat(timespec="seconds")
+            except (OverflowError, OSError, ValueError):
+                pass
+        csv_rows.append([video_id, str(work.get("title") or download.get("title") or ""),
+                         "https://www.douyin.com/video/" + video_id, published_at, captured_at, *values,
+                         *[(work.get("statistics_availability") or {}).get(key, "not_returned") for key in metric_keys],
+                         str(media) if media and media.is_file() else "", str(md) if md and md.is_file() else "", str(srt) if srt and srt.is_file() else ""])
     temporary = root / ".视频与逐字稿索引.md.tmp"
     temporary.write_text("".join(lines), encoding="utf-8")
     os.replace(temporary, root / "视频与逐字稿索引.md")
+    csv_path = root / "catalog" / "作品数据指标.csv"
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=".作品数据指标.", dir=csv_path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8-sig", newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(["video_id", "title", "official_url", "published_at_utc", "statistics_captured_at", *metric_keys,
+                             *[key + "_availability" for key in metric_keys], "original_video_path", "transcript_path", "srt_path"])
+            writer.writerows(csv_rows)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, csv_path)
+    finally:
+        Path(name).unlink(missing_ok=True)
 
 
 def brief(summary: dict, stage: str) -> None:
@@ -184,7 +246,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--root", type=Path, required=True, help="library folder; videos and raw transcripts are retained")
     result.add_argument("--catalog", type=Path, help="existing catalog; default ROOT/catalog/catalog.json")
     result.add_argument("--stage", choices=("all", "collect", "download", "transcribe", "status", "doctor"), default="all")
-    result.add_argument("--refresh-catalog", action="store_true", help="refetch a completed catalog to include new public works")
+    result.add_argument("--refresh-catalog", action="store_true", help="refetch public works and their observed interaction metrics")
     result.add_argument("--limit", type=int, default=0, help="0 processes all; positive value is a sample, never a full-library success")
     result.add_argument("--workers", type=int, default=2, help="parallel downloads; ASR runs one local model at a time")
     result.add_argument("--dns-mode", choices=("auto", "off", "always"), default="auto")
@@ -223,6 +285,9 @@ def main() -> int:
     started = now()
     stages: dict[str, int] = {}
     try:
+        # Finish an interrupted rename before any download or ASR can use paths.
+        if (root / NAMING.JOURNAL_NAME).exists() or (root / NAMING.JOURNAL_NAME).is_symlink():
+            NAMING.reconcile_names(root, catalog_path)
         cached = load_json(catalog_path)
         requested_uid = None
         if args.profile:
@@ -263,10 +328,6 @@ def main() -> int:
             stages["collect"] = run_logged(commands["collect"], logs / "collect.log", root, catalog_path, args.limit, "collect")
             if not rows(load_json(catalog_path)):
                 raise RuntimeError("No video catalog was collected; inspect logs/collect.log")
-        if args.stage == "collect":
-            brief(snapshot(root, catalog_path, args.limit), "collect_finished")
-            write_library_index(root, catalog_path)
-            return stages.get("collect", 0)
         catalog = load_json(catalog_path)
         if not rows(catalog):
             raise ValueError("A nonempty catalog is required for download or transcription")
@@ -306,10 +367,17 @@ def main() -> int:
                 asr_log.close()
         elif args.stage in ("all", "transcribe"):
             stages["transcribe"] = run_logged(commands["transcribe"], logs / "transcribe.log", root, catalog_path, args.limit, "transcribe")
+        naming_report = None
+        if (catalog.get("catalog_complete") is True and any("statistics" in row for row in rows(catalog))
+                and not any(code != 0 for code in stages.values())):
+            # All child writers have finished; names can now change safely.
+            naming_report = NAMING.reconcile_names(root, catalog_path)
         summary = snapshot(root, catalog_path, args.limit)
+        if naming_report is not None:
+            summary["artifact_naming"] = naming_report
         write_library_index(root, catalog_path)
         # A sampled or incomplete run must never publish a full-library corpus.
-        if (args.stage == "all" and summary["all_public_videos_transcribed"]
+        if (args.stage in ("all", "collect") and summary["all_public_videos_transcribed"]
                 and not any(code != 0 for code in stages.values())):
             commands["export"] = [python, str(SCRIPTS / "export_transcripts.py"),
                                   "--root", str(root), "--catalog", str(catalog_path)]
