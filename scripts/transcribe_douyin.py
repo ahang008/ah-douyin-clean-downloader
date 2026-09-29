@@ -15,6 +15,8 @@ import tempfile
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR))
+from runtime_paths import find_command
 DOWNLOAD_SCRIPT = SCRIPT_DIR / "download_douyin.py"
 DEFAULT_MODEL = "mlx-community/whisper-large-v3-turbo"
 DEFAULT_OUTPUT_NAME = "抖音逐字稿"
@@ -40,7 +42,7 @@ def default_output_dir() -> str:
 
 
 def require_command(name: str, message: str) -> str:
-    path = shutil.which(name)
+    path = find_command(name, SCRIPT_DIR.parent)
     if not path:
         raise DOWNLOADER.DownloadError(message)
     return path

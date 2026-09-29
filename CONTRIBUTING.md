@@ -1,7 +1,7 @@
 # Contributing
 
 Contributions should keep the project small, local-first, and limited to
-authorized single-video downloads.
+authorized single-video downloads and local creator-library transcription.
 
 ## Before submitting
 
@@ -9,8 +9,13 @@ authorized single-video downloads.
    copied platform responses.
 2. Add or update synthetic tests for behavior changes.
 3. Run `python3 -m unittest discover -s tests -v`.
-4. Run `python3 -m py_compile scripts/*.py tests/*.py`.
+4. Run `python3 -m py_compile scripts/*.py tests/*.py` and check shell syntax.
 5. Document any third-party code, algorithm, or text that was copied or adapted.
+
+Use synthetic fixtures for catalog, download, and ASR behavior. Browser login
+profiles, model weights, transcripts, and real media belong outside the source
+repository. Build archives with `scripts/package_skill.py`, which uses a release
+allowlist; do not zip a live installed Skill directory recursively.
 
 ## Contribution grant
 

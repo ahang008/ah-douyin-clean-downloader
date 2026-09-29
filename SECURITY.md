@@ -24,7 +24,19 @@ through a private channel listed on the repository and include:
 - Localhost and literal private-network media addresses are rejected.
 - Existing output files are not overwritten.
 - Partial files are used while downloading.
-- The program does not persist cookies, account credentials, or tokens.
+- Download and single-video transcription scripts do not read or persist login
+  cookies, account credentials, or tokens.
+- Creator collection uses an owned, dedicated official Edge profile. Edge may
+  retain ordinary login cookies in that private runtime directory. The scripts
+  never extract those cookies or read the daily browser's account database.
+- The dedicated browser's debugging port must belong to that process and bind
+  only to loopback. Its default browser sandbox and TLS validation remain on.
+- Only public target-creator metadata is saved from page responses. Request
+  headers, signed URLs, and full authenticated responses are not recorded.
+- An optional process-local DNS tunnel accepts scoped public HTTPS targets;
+  it does not terminate TLS or change system proxy/DNS settings.
+- Release archives exclude login profiles, videos, audio, transcripts, model
+  weights, and runtime logs. Never publish a working creator-library directory.
 
 This tool cannot guarantee that a remote platform endpoint is always available,
 safe, or unchanged. Review changes before running them on sensitive systems.
