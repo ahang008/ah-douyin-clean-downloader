@@ -9,6 +9,10 @@ from pathlib import Path
 import shutil
 import sys
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR))
+from runtime_paths import find_command
+
 
 def build_report() -> dict:
     library = Path.home() / "Desktop" / "抖音无水印视频"
@@ -16,7 +20,7 @@ def build_report() -> dict:
     curl = shutil.which("curl")
     ffprobe = shutil.which("ffprobe")
     ffmpeg = shutil.which("ffmpeg")
-    mlx_whisper = shutil.which("mlx_whisper")
+    mlx_whisper = find_command("mlx_whisper", SCRIPT_DIR.parent)
     return {
         "status": "ok" if python_ok and curl else "needs_attention",
         "python": {

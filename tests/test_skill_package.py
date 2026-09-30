@@ -20,6 +20,15 @@ class SkillPackageTests(unittest.TestCase):
             "scripts/download_douyin.py",
             "scripts/doctor.py",
             "scripts/transcribe_douyin.py",
+            "scripts/run_creator.py",
+            "scripts/collect_cover_metadata.py",
+            "scripts/ocr_covers.swift",
+            "scripts/build_annotated_transcripts.py",
+            "scripts/export_transcripts.py",
+            "scripts/batch_rewrite.py",
+            "scripts/requirements-lock.txt",
+            "references/single-transcript.md",
+            "references/creator-batch.md",
         )
         missing = [name for name in required if not (ROOT / name).is_file()]
         self.assertEqual(missing, [])
@@ -30,9 +39,9 @@ class SkillPackageTests(unittest.TestCase):
         self.assertIn("name: ah-douyin-clean-downloader", text)
         self.assertIn("description:", text)
         self.assertIn("${CODEX_HOME:-$HOME/.codex}", text)
-        self.assertIn("用户只发送一条抖音官方链接", text)
         self.assertIn("抖音无水印视频/<博主昵称>", text)
-        self.assertIn("校对后的逐字稿", text)
+        self.assertIn("references/single-transcript.md", text)
+        self.assertIn("references/creator-batch.md", text)
         self.assertNotIn("/Users/", text)
 
     def test_direct_github_install_contract(self) -> None:
