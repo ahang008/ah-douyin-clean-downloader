@@ -337,7 +337,13 @@ def main() -> int:
         raise ValueError("limit must be nonnegative and workers must be 1–8")
     root = args.root.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    catalog_path = (args.catalog.expanduser().resolve() if args.catalog else root / "catalog" / "catalog.json")
+    default_catalog = root / "catalog" / "catalog.json"
+    if (args.stage in ("metadata", "status") and not default_catalog.is_file()
+            and (root / "catalog" / "browser-catalog.json").is_file()):
+        # Older creator libraries stored the same official browser catalog
+        # under this name. Metadata backfill should work without a rename.
+        default_catalog = root / "catalog" / "browser-catalog.json"
+    catalog_path = args.catalog.expanduser().resolve() if args.catalog else default_catalog
     logs = root / "logs"
     commands: dict[str, list[str]] = {}
     python = sys.executable
