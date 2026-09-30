@@ -26,6 +26,7 @@ class SkillPackageTests(unittest.TestCase):
             "scripts/build_annotated_transcripts.py",
             "scripts/export_transcripts.py",
             "scripts/batch_rewrite.py",
+            "scripts/recover_official_web_detail.py",
             "scripts/requirements-lock.txt",
             "references/single-transcript.md",
             "references/creator-batch.md",

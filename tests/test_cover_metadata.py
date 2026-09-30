@@ -130,6 +130,21 @@ class CatalogAndCoverTests(unittest.TestCase):
         self.assertEqual(result["cover_status"], "metadata_id_not_returned")
         self.assertIsNone(result["cover_image_path"])
 
+    def test_cached_web_detail_cover_keeps_its_actual_source(self):
+        cover = self.root / (IDS[0] + ".jpg")
+        cover.write_bytes(b"\xff\xd8\xff" + b"x" * 128)
+        marker = cover.with_suffix(".source.json")
+        marker.write_text(json.dumps({"video_id": IDS[0],
+                                      "cover_source": "official_aweme_web_detail.video.cover",
+                                      "cover_image_sha256": hashlib.sha256(cover.read_bytes()).hexdigest()}))
+        with patch.object(MODULE, "valid_jpeg", return_value=True):
+            result = MODULE.fetch_one(IDS[0], self.root, None)
+        self.assertEqual(result["cover_source"], "official_aweme_web_detail.video.cover")
+        cover.write_bytes(cover.read_bytes() + b"changed")
+        with patch.object(MODULE, "valid_jpeg", return_value=True):
+            stale = MODULE.fetch_one(IDS[0], self.root, None)
+        self.assertEqual(stale["cover_source"], "cached_cover_source_unverified")
+
 
 class OutputTests(unittest.TestCase):
     def setUp(self):

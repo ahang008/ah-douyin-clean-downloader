@@ -139,12 +139,12 @@ def load_records(path: Path) -> dict[str, dict]:
 
 
 def record(video_id: str, image: Path | None, status: str, lines: list[dict] | None = None,
-           captured_at: str | None = None) -> dict:
+           captured_at: str | None = None, source: str = "official_aweme_feed.video.cover") -> dict:
     lines = lines or []
     return {
         "video_id": video_id,
         "cover_image_path": str(image.resolve()) if image else None,
-        "cover_source": "official_aweme_feed.video.cover" if image else None,
+        "cover_source": source if image else None,
         "cover_captured_at_utc": captured_at,
         "cover_text_raw": "\n".join(str(line.get("text") or "") for line in lines).strip(),
         "cover_status": status,
@@ -226,7 +226,19 @@ def fetch_one(video_id: str, image_dir: Path, proxy: str | None) -> dict:
     destination = image_dir / f"{video_id}.jpg"
     if valid_jpeg(destination):
         cached_at = datetime.fromtimestamp(destination.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
-        return record(video_id, destination, "ocr_pending", captured_at=cached_at)
+        source = "official_aweme_feed.video.cover"
+        marker = destination.with_suffix(".source.json")
+        if marker.is_file():
+            source = "cached_cover_source_unverified"
+            try:
+                saved = json.loads(marker.read_text(encoding="utf-8"))
+                if (saved.get("video_id") == video_id
+                        and saved.get("cover_source") == "official_aweme_web_detail.video.cover"
+                        and saved.get("cover_image_sha256") == hashlib.sha256(destination.read_bytes()).hexdigest()):
+                    source = saved["cover_source"]
+            except (OSError, ValueError, AttributeError):
+                pass
+        return record(video_id, destination, "ocr_pending", captured_at=cached_at, source=source)
     destination.unlink(missing_ok=True)
 
     with tempfile.TemporaryDirectory(prefix=f"cover-{video_id}-") as temp_name:
