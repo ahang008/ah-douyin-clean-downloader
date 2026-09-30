@@ -12,6 +12,7 @@ from collections import Counter
 import csv
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import importlib.util
 import json
 import os
@@ -27,6 +28,8 @@ from urllib.parse import urlparse
 SCRIPTS = Path(__file__).resolve().parent
 ACTIVE: list[subprocess.Popen] = []
 SUCCESS_ASR = {"machine_draft_saved", "skipped_verified"}
+COVER_TERMINAL = {"ok", "ocr_low_confidence", "ocr_empty"}
+COVER_RECORDS_NAME = "作品标题标签封面.jsonl"
 
 
 def local_helper(filename: str, name: str):
@@ -72,6 +75,53 @@ def rows(catalog: dict) -> list[dict]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
+def cover_records(root: Path, catalog_path: Path) -> dict[str, dict]:
+    """Read only metadata made for the exact current catalog snapshot."""
+    path = root / "catalog" / COVER_RECORDS_NAME
+    if not path.is_file() or not catalog_path.is_file():
+        return {}
+    digest = hashlib.sha256(catalog_path.read_bytes()).hexdigest()
+    records = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict) or row.get("catalog_sha256") != digest:
+            continue
+        video_id = str(row.get("video_id") or "")
+        if re.fullmatch(r"\d{16,22}", video_id):
+            records[video_id] = row
+    return records
+
+
+def cover_ready(root: Path, row: dict | None) -> bool:
+    if not row or row.get("cover_status") not in COVER_TERMINAL:
+        return False
+    raw = row.get("cover_image_path")
+    if not isinstance(raw, str) or not raw:
+        return False
+    image = Path(raw).expanduser().resolve()
+    return (root / "covers").resolve() in image.parents and image.is_file()
+
+
+def annotated_copy(root: Path, video_id: str, entry: dict | None, catalog_sha256: str) -> Path | None:
+    if not entry or entry.get("catalog_sha256") != catalog_sha256:
+        return None
+    raw = entry.get("path")
+    if not isinstance(raw, str) or not raw:
+        return None
+    path = Path(raw).expanduser().resolve()
+    if path.parent != (root / "annotated-transcripts" / video_id).resolve() or not path.is_file():
+        return None
+    expected = entry.get("generated_sha256")
+    if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+        return None
+    return path if hashlib.sha256(path.read_bytes()).hexdigest() == expected else None
+
+
 def transcript_files(directory: Path) -> dict[str, Path]:
     return PATHS.resolve_artifact_paths(directory)
 
@@ -90,6 +140,7 @@ def snapshot(root: Path, catalog_path: Path, limit: int = 0) -> dict:
     ids = {str(row.get("video_id") or row.get("aweme_id")) for row in selected}
     downloads = load_json(root / "media" / "download-manifest.json").get("videos", {})
     transcripts = load_json(root / "local-transcripts" / "_batch-state.json").get("jobs", {})
+    covers = cover_records(root, catalog_path)
     verified = set()
     for video_id in ids:
         entry = downloads.get(video_id, {})
@@ -122,6 +173,12 @@ def snapshot(root: Path, catalog_path: Path, limit: int = 0) -> dict:
         "all_public_videos_transcribed": bool(ids) and catalog_complete and not limit and ids == verified == transcribed,
         "transcript_review_status": "raw_machine_output_not_audio_proofread",
         "public_metrics": METRICS.metrics_summary(records),
+        "cover_metadata_rows": len(ids & covers.keys()),
+        "cover_metadata_processed": sum(cover_ready(root, covers.get(video_id)) for video_id in ids),
+        "cover_metadata_statuses": dict(Counter(covers.get(video_id, {}).get("cover_status", "pending") for video_id in ids)),
+        "cover_metadata_missing_ids": sorted(video_id for video_id in ids if not cover_ready(root, covers.get(video_id))),
+        "cover_metadata_complete": bool(ids) and catalog_complete and not limit and all(
+            cover_ready(root, covers.get(video_id)) for video_id in ids),
         "runtime": {"online_llm_calls": 0, "computer_use_calls": 0, "paid_asr_calls": 0},
     }
     atomic_json(root / "pipeline-summary.json", summary)
@@ -134,13 +191,19 @@ def write_library_index(root: Path, catalog_path: Path) -> None:
     metadata = {str(row.get("video_id") or row.get("aweme_id")): row for row in rows(catalog)}
     downloads = load_json(root / "media" / "download-manifest.json").get("videos", {})
     jobs = load_json(root / "local-transcripts" / "_batch-state.json").get("jobs", {})
+    covers = cover_records(root, catalog_path)
+    generated = load_json(root / "annotated-transcripts" / "_generated-state.json").get("videos", {})
+    catalog_digest = hashlib.sha256(catalog_path.read_bytes()).hexdigest() if catalog_path.is_file() else ""
     heading = ("# 视频与机器逐字稿索引\n\n生成时间：" + now() +
                "\n\n逐字稿为本地机器识别，未统一做人工听音校对。目录 complete=" +
                str(catalog.get("catalog_complete", catalog.get("complete", False))).lower() +
                "。已知链接可能多于尚未采集完整的分页目录。\n\n"
                "指标为官方网页采集时的公开计数快照；未获取不等于 0。文件名使用点赞、评论、收藏、分享四项，播放量占位零视为未核实。\n\n")
-    lines = [heading, "| 视频 ID | 标题 | 赞 | 评 | 藏 | 转 | 指标采集时间 | 原视频 | 机器逐字稿 | SRT |\n"
-             "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"]
+    cover_index = root / "标题标签封面索引.md"
+    if cover_index.is_file() and covers:
+        heading += f"发布文案开头、井号标签和封面文字见[标题标签封面索引](<{cover_index}>)；封面机器识字尚未逐字人工核对。\n\n"
+    lines = [heading, "| 视频 ID | 标题 | 赞 | 评 | 藏 | 转 | 指标采集时间 | 原视频 | 机器逐字稿 | SRT | 标注阅读稿 |\n"
+             "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"]
     metric_keys = ("digg_count", "comment_count", "collect_count", "share_count", "play_count", "forward_count", "download_count")
     csv_rows = []
     for video_id in dict.fromkeys([*metadata, *downloads]):
@@ -158,11 +221,14 @@ def write_library_index(root: Path, catalog_path: Path) -> None:
         transcript_link = ("路径待核验" if path_error else
                            f"[逐字稿](<{md}>)" if md and md.is_file() else jobs.get(video_id, {}).get("status", "待识别"))
         subtitle_link = "路径待核验" if path_error else f"[字幕](<{srt}>)" if srt and srt.is_file() else "—"
+        annotated = annotated_copy(root, video_id, generated.get(video_id), catalog_digest)
+        annotated_link = f"[带标题标签封面的阅读稿](<{annotated}>)" if annotated else "待生成"
         work = metadata.get(video_id, {})
+        cover = covers.get(video_id, {})
         values = [METRICS.metric_text(work, key) for key in metric_keys]
         captured_at = work.get("statistics_captured_at") or "未获取"
         lines.append(f"| [{video_id}](https://www.douyin.com/video/{video_id}) | {title} | " +
-                     " | ".join(values[:4]) + f" | {captured_at} | {video_link} | {transcript_link} | {subtitle_link} |\n")
+                     " | ".join(values[:4]) + f" | {captured_at} | {video_link} | {transcript_link} | {subtitle_link} | {annotated_link} |\n")
         published_at = "未获取"
         created = work.get("create_time")
         if isinstance(created, int) and not isinstance(created, bool) and created > 0:
@@ -173,7 +239,10 @@ def write_library_index(root: Path, catalog_path: Path) -> None:
         csv_rows.append([video_id, str(work.get("title") or download.get("title") or ""),
                          "https://www.douyin.com/video/" + video_id, published_at, captured_at, *values,
                          *[(work.get("statistics_availability") or {}).get(key, "not_returned") for key in metric_keys],
-                         str(media) if media and media.is_file() else "", str(md) if md and md.is_file() else "", str(srt) if srt and srt.is_file() else ""])
+                         str(media) if media and media.is_file() else "", str(md) if md and md.is_file() else "", str(srt) if srt and srt.is_file() else "", str(annotated) if annotated else "",
+                         str(cover.get("title_candidate") or ""), " ".join(cover.get("hashtags") or []),
+                         str(cover.get("cover_text_raw") or ""), str(cover.get("cover_status") or "未获取"),
+                         str(cover.get("cover_image_path") or "") if cover_ready(root, cover) else ""])
     temporary = root / ".视频与逐字稿索引.md.tmp"
     temporary.write_text("".join(lines), encoding="utf-8")
     os.replace(temporary, root / "视频与逐字稿索引.md")
@@ -184,7 +253,8 @@ def write_library_index(root: Path, catalog_path: Path) -> None:
         with os.fdopen(descriptor, "w", encoding="utf-8-sig", newline="") as stream:
             writer = csv.writer(stream)
             writer.writerow(["video_id", "title", "official_url", "published_at_utc", "statistics_captured_at", *metric_keys,
-                             *[key + "_availability" for key in metric_keys], "original_video_path", "transcript_path", "srt_path"])
+                             *[key + "_availability" for key in metric_keys], "original_video_path", "transcript_path", "srt_path", "annotated_transcript_path",
+                             "title_candidate", "hashtags", "cover_text_raw", "cover_status", "cover_image_path"])
             writer.writerows(csv_rows)
             stream.flush()
             os.fsync(stream.fileno())
@@ -245,7 +315,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("profile", nargs="?", help="official Douyin profile URL, share card, or sec_uid")
     result.add_argument("--root", type=Path, required=True, help="library folder; videos and raw transcripts are retained")
     result.add_argument("--catalog", type=Path, help="existing catalog; default ROOT/catalog/catalog.json")
-    result.add_argument("--stage", choices=("all", "collect", "download", "transcribe", "status", "doctor"), default="all")
+    result.add_argument("--stage", choices=("all", "collect", "metadata", "download", "transcribe", "status", "doctor"), default="all")
     result.add_argument("--refresh-catalog", action="store_true", help="refetch public works and their observed interaction metrics")
     result.add_argument("--limit", type=int, default=0, help="0 processes all; positive value is a sample, never a full-library success")
     result.add_argument("--workers", type=int, default=2, help="parallel downloads; ASR runs one local model at a time")
@@ -347,6 +417,12 @@ def main() -> int:
             commands["transcribe"] += ["--model", args.model]
         if args.initial_prompt:
             commands["transcribe"] += ["--initial-prompt", args.initial_prompt]
+        commands["metadata"] = [python, str(SCRIPTS / "collect_cover_metadata.py"),
+                                "--catalog", str(catalog_path), "--root", str(root), "--limit", str(args.limit)]
+        if args.proxy:
+            commands["metadata"] += ["--proxy", args.proxy]
+        commands["annotate"] = [python, str(SCRIPTS / "build_annotated_transcripts.py"),
+                                "--root", str(root), "--catalog", str(catalog_path)]
         done_file = root / ".downloads-finished.json"
         asr_process = asr_log = None
         if args.stage == "all" and not args.serial:
@@ -368,17 +444,25 @@ def main() -> int:
         elif args.stage in ("all", "transcribe"):
             stages["transcribe"] = run_logged(commands["transcribe"], logs / "transcribe.log", root, catalog_path, args.limit, "transcribe")
         naming_report = None
-        if (catalog.get("catalog_complete") is True and any("statistics" in row for row in rows(catalog))
+        if (args.stage in ("all", "collect", "download", "transcribe")
+                and catalog.get("catalog_complete") is True and any("statistics" in row for row in rows(catalog))
                 and not any(code != 0 for code in stages.values())):
             # All child writers have finished; names can now change safely.
             naming_report = NAMING.reconcile_names(root, catalog_path)
+        if args.stage in ("all", "collect", "metadata"):
+            stages["metadata"] = run_logged(commands["metadata"], logs / "metadata.log", root, catalog_path,
+                                             args.limit, "metadata")
+        if args.stage in ("all", "collect", "metadata", "transcribe") and (root / "catalog" / COVER_RECORDS_NAME).is_file():
+            stages["annotate"] = run_logged(commands["annotate"], logs / "annotate.log", root, catalog_path,
+                                             args.limit, "annotate")
         summary = snapshot(root, catalog_path, args.limit)
         if naming_report is not None:
             summary["artifact_naming"] = naming_report
         write_library_index(root, catalog_path)
         # A sampled or incomplete run must never publish a full-library corpus.
+        core_failed = any(stages.get(stage, 0) != 0 for stage in ("collect", "download", "transcribe"))
         if (args.stage in ("all", "collect") and summary["all_public_videos_transcribed"]
-                and not any(code != 0 for code in stages.values())):
+                and not core_failed):
             commands["export"] = [python, str(SCRIPTS / "export_transcripts.py"),
                                   "--root", str(root), "--catalog", str(catalog_path)]
             stages["export"] = run_logged(commands["export"], logs / "export.log", root, catalog_path, 0, "export")

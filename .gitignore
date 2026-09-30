@@ -12,6 +12,8 @@ dist/
 release/
 media/
 local-transcripts/
+covers/
+annotated-transcripts/
 catalog/
 logs/
 rewrites/

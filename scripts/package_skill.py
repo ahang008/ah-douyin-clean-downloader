@@ -18,7 +18,7 @@ ROOT_FILES = (
     "SECURITY.md", "CHANGELOG.md", "CONTRIBUTING.md",
 )
 DIRECTORIES = ("agents", "assets", "references", "scripts", "tests")
-FORBIDDEN_PARTS = {"__pycache__", ".git", ".browser-session", "media", "local-transcripts", "catalog", "logs",
+FORBIDDEN_PARTS = {"__pycache__", ".git", ".browser-session", "media", "local-transcripts", "catalog", "logs", "covers", "annotated-transcripts",
                    "rewrites", "rewrite-work", "rewrite-output"}
 
 
@@ -27,7 +27,7 @@ def allowed_file(relative: Path) -> bool:
         return False
     group = relative.parts[0]
     if group == "scripts":
-        return relative.suffix in {".py", ".sh"} or (
+        return relative.suffix in {".py", ".sh", ".swift"} or (
             relative.name.startswith("requirements") and relative.suffix == ".txt")
     if group == "tests":
         return relative.suffix == ".py" or (
@@ -111,7 +111,7 @@ def build_package(root: Path, output: Path, version: str) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
-    parser.add_argument("--version", default="v0.4.0")
+    parser.add_argument("--version", default="v0.5.0")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     output = args.output or args.root / "dist" / f"{NAME}-{args.version}.zip"

@@ -1,6 +1,7 @@
 """Controller dispatch fixtures: no browser, network, Keychain, or ASR process."""
 import builtins
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -66,7 +67,7 @@ class BrowserDispatchFixtures(unittest.TestCase):
         code = self.execute([PROFILE, "--stage", "collect", "--browser-session",
                              "--browser-session-dir", str(session), "--browser-timeout", "417"])
         self.assertEqual(code, 0)
-        self.assertEqual(len(self.calls), 1)
+        self.assertEqual([stage for stage, _ in self.calls], ["collect", "metadata"])
         stage, command = self.calls[0]
         self.assertEqual(stage, "collect")
         self.assertEqual(Path(command[1]).name, "launch_browser_collector.py")
@@ -91,7 +92,7 @@ class BrowserDispatchFixtures(unittest.TestCase):
         # No media is created by these mocks, so the overall job correctly remains incomplete.
         code = self.execute([PROFILE, "--stage", "all", "--browser-session", "--serial"])
         self.assertEqual(code, 1)
-        self.assertEqual([stage for stage, _ in self.calls], ["download", "transcribe"])
+        self.assertEqual([stage for stage, _ in self.calls], ["download", "transcribe", "metadata"])
         self.assertTrue(all(Path(command[1]).name != "launch_browser_collector.py" for _, command in self.calls))
 
     def test_download_stage_uses_existing_partial_catalog_without_collecting(self):
@@ -100,10 +101,29 @@ class BrowserDispatchFixtures(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual([stage for stage, _ in self.calls], ["download"])
 
+    def test_metadata_stage_needs_only_saved_catalog_and_no_media_process(self):
+        self.catalog(complete=True)
+        self.assertEqual(self.execute(["--stage", "metadata", "--limit", "1"]), 0)
+        self.assertEqual([stage for stage, _ in self.calls], ["metadata"])
+        command = self.calls[0][1]
+        self.assertEqual(Path(command[1]).name, "collect_cover_metadata.py")
+        self.assertEqual(command[command.index("--catalog") + 1], str(self.catalog_path))
+        self.assertEqual(command[command.index("--limit") + 1], "1")
+
+    def test_metadata_stage_generates_reading_copies_when_records_exist(self):
+        self.catalog(complete=True)
+        metadata = self.root / "catalog/作品标题标签封面.jsonl"
+        metadata.write_text(json.dumps({"video_id": "7600000000000000001",
+                                        "catalog_sha256": hashlib.sha256(self.catalog_path.read_bytes()).hexdigest(),
+                                        "cover_status": "not_attempted"}) + "\n")
+        self.assertEqual(self.execute(["--stage", "metadata"]), 0)
+        self.assertEqual([stage for stage, _ in self.calls], ["metadata", "annotate"])
+        self.assertEqual(Path(self.calls[1][1][1]).name, "build_annotated_transcripts.py")
+
     def test_refresh_complete_catalog_dispatches_browser_collection(self):
         self.catalog(complete=True)
         self.execute([PROFILE, "--stage", "all", "--browser-session", "--refresh-catalog", "--serial"])
-        self.assertEqual([stage for stage, _ in self.calls], ["collect", "download", "transcribe"])
+        self.assertEqual([stage for stage, _ in self.calls], ["collect", "download", "transcribe", "metadata"])
         self.assertEqual(Path(self.calls[0][1][1]).name, "launch_browser_collector.py")
 
     def test_removed_credential_route_is_rejected_before_any_child(self):
@@ -134,7 +154,7 @@ class BrowserDispatchFixtures(unittest.TestCase):
         self.prepared_library()
         code = self.execute([PROFILE, "--serial"])
         self.assertEqual(code, 0)
-        self.assertEqual([stage for stage, _ in self.calls], ["download", "transcribe", "export"])
+        self.assertEqual([stage for stage, _ in self.calls], ["download", "transcribe", "metadata", "export"])
         command = self.calls[-1][1]
         self.assertEqual(Path(command[1]).name, "export_transcripts.py")
         self.assertEqual(command[command.index("--root") + 1], str(self.root))
@@ -144,7 +164,7 @@ class BrowserDispatchFixtures(unittest.TestCase):
     def test_limit_never_exports_full_corpus_even_when_selected_library_is_ready(self):
         self.prepared_library()
         self.assertEqual(self.execute([PROFILE, "--serial", "--limit", "1"]), 0)
-        self.assertEqual([stage for stage, _ in self.calls], ["download", "transcribe"])
+        self.assertEqual([stage for stage, _ in self.calls], ["download", "transcribe", "metadata"])
         summary = json.loads((self.root / "pipeline-summary.json").read_text())
         self.assertFalse(summary["all_public_videos_transcribed"])
         self.assertFalse(summary["corpus_exported"])
@@ -165,6 +185,19 @@ class BrowserDispatchFixtures(unittest.TestCase):
         self.fake_run_logged = failed
         self.assertEqual(self.execute([PROFILE, "--serial"]), 1)
         self.assertFalse(json.loads((self.root / "pipeline-summary.json").read_text())["corpus_exported"])
+
+    def test_cover_failure_is_reported_but_does_not_discard_ready_corpus_export(self):
+        self.prepared_library()
+        original = self.fake_run_logged
+
+        def failed_cover(*arguments):
+            return 1 if arguments[-1] == "metadata" else original(*arguments)
+
+        self.fake_run_logged = failed_cover
+        self.assertEqual(self.execute([PROFILE, "--serial"]), 1)
+        self.assertEqual([stage for stage, _ in self.calls], ["download", "transcribe", "export"])
+        self.assertTrue(json.loads((self.root / "pipeline-summary.json").read_text())["corpus_exported"])
+        self.assertEqual(json.loads((self.root / "pipeline-run.json").read_text())["stage_exit_codes"]["metadata"], 1)
 
     def test_wrong_creator_is_rejected_without_replacing_existing_catalog(self):
         self.catalog(complete=False, sec_uid="MS4wLjAnotherCreator")

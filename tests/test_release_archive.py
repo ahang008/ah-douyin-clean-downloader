@@ -21,7 +21,7 @@ class ReleaseArchiveTests(unittest.TestCase):
     def fixture(self, root):
         for name in MODULE.ROOT_FILES:
             (root / name).write_text("synthetic release document\n")
-        for name in ("scripts/run_creator.py", "scripts/requirements.txt", "references/creator-batch.md",
+        for name in ("scripts/run_creator.py", "scripts/ocr_covers.swift", "scripts/requirements.txt", "references/creator-batch.md",
                      "scripts/batch_rewrite.py", "tests/test_batch_rewrite.py",
                      "agents/openai.yaml", "tests/fixtures/synthetic.json"):
             path = root / name
@@ -32,7 +32,8 @@ class ReleaseArchiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.fixture(root)
-            for name in (".venv/bin/python", ".browser-session/Cookies", "media/video.mp4",
+            for name in (".venv/bin/python", ".browser-session/Cookies", "media/video.mp4", "covers/cover.jpg",
+                         "annotated-transcripts/one.md", "scripts/covers/private.jpg",
                          "local-transcripts/raw.md", "catalog/transcripts.jsonl",
                          "scripts/__pycache__/cached.pyc", "scripts/media/private.py",
                          "references/rewrites/private.md", "references/rewrite-output/private.md",
@@ -49,9 +50,10 @@ class ReleaseArchiveTests(unittest.TestCase):
                 self.assertEqual(archive.testzip(), None)
                 names = archive.namelist()
                 self.assertIn(MODULE.NAME + "/scripts/run_creator.py", names)
+                self.assertIn(MODULE.NAME + "/scripts/ocr_covers.swift", names)
                 self.assertIn(MODULE.NAME + "/scripts/batch_rewrite.py", names)
                 self.assertIn(MODULE.NAME + "/tests/test_batch_rewrite.py", names)
-                self.assertEqual(len(names), len(MODULE.ROOT_FILES) + 7)
+                self.assertEqual(len(names), len(MODULE.ROOT_FILES) + 8)
                 self.assertFalse(any("private runtime" in archive.read(name).decode() for name in names))
 
     def test_symlink_cannot_copy_a_file_outside_the_skill(self):
@@ -62,7 +64,7 @@ class ReleaseArchiveTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Symlinks"):
                 MODULE.build_package(root, root / "dist/release.zip", "v0.3.0")
 
-    def test_cli_default_version_is_v040(self):
+    def test_cli_default_version_is_v050(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.fixture(root)
@@ -70,8 +72,8 @@ class ReleaseArchiveTests(unittest.TestCase):
             with patch.object(sys, "argv", [str(SCRIPT), "--root", str(root)]), contextlib.redirect_stdout(output):
                 self.assertEqual(MODULE.main(), 0)
             result = json.loads(output.getvalue())
-            self.assertEqual(result["version"], "v0.4.0")
-            self.assertEqual(Path(result["output"]).name, MODULE.NAME + "-v0.4.0.zip")
+            self.assertEqual(result["version"], "v0.5.0")
+            self.assertEqual(Path(result["output"]).name, MODULE.NAME + "-v0.5.0.zip")
 
 
 if __name__ == "__main__":

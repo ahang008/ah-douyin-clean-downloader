@@ -84,6 +84,49 @@ class CreatorMetricsIntegrationTests(unittest.TestCase):
         self.assertTrue(Path(rows[0]["transcript_path"]).is_file())
         self.assertEqual(rows[0]["statistics_captured_at"], self.catalog["videos"][0]["statistics_captured_at"])
 
+    def test_cover_metadata_enriches_index_csv_and_corpus_without_changing_asr(self):
+        video_id = self.fixture.ids[0]
+        image = self.fixture.root / "covers" / (video_id + ".jpg")
+        image.parent.mkdir()
+        image.write_bytes(b"\xff\xd8\xffcover fixture")
+        catalog_hash = hashlib.sha256(self.fixture.catalog_path.read_bytes()).hexdigest()
+        work = self.catalog["videos"][0]
+        metadata = {"video_id": video_id, "catalog_sha256": catalog_hash,
+                    "published_caption": work["title"], "title_candidate": "封面测试标题",
+                    "hashtags": ["#减肥", "#视频"], "cover_text_raw": "封面第一行\n封面第二行",
+                    "cover_status": "ocr_low_confidence", "cover_image_path": str(image),
+                    "human_verified": False}
+        meta_path = self.fixture.root / "catalog/作品标题标签封面.jsonl"
+        meta_path.write_text(json.dumps(metadata, ensure_ascii=False) + "\n", encoding="utf-8")
+        before = (self.fixture.root / "local-transcripts" / video_id / PATHS.OUTPUT_NAMES["markdown"]).read_bytes()
+        CONTROLLER.write_library_index(self.fixture.root, self.fixture.catalog_path)
+        with (self.fixture.root / "catalog/作品数据指标.csv").open(encoding="utf-8-sig", newline="") as stream:
+            csv_first = next(csv.DictReader(stream))
+        self.assertEqual(csv_first["title_candidate"], "封面测试标题")
+        self.assertEqual(csv_first["hashtags"], "#减肥 #视频")
+        self.assertEqual(csv_first["cover_status"], "ocr_low_confidence")
+        self.assertEqual(self.fixture.run_export(), 0)
+        exported = [json.loads(line) for line in (self.fixture.root / "catalog/transcripts-2.jsonl").read_text().splitlines()]
+        self.assertEqual(exported[0]["title_candidate"], "封面测试标题")
+        self.assertEqual(exported[0]["cover_text_raw"], "封面第一行\n封面第二行")
+        self.assertFalse(exported[0]["cover_human_verified"])
+        self.assertIn("封面文字（机器识别，待人工核对", next(self.fixture.root.glob("*条机器逐字稿合集.md")).read_text())
+        self.assertEqual((self.fixture.root / "local-transcripts" / video_id / PATHS.OUTPUT_NAMES["markdown"]).read_bytes(), before)
+
+    def test_stale_cover_metadata_is_not_presented_as_current(self):
+        video_id = self.fixture.ids[0]
+        path = self.fixture.root / "catalog/作品标题标签封面.jsonl"
+        path.write_text(json.dumps({"video_id": video_id, "catalog_sha256": "0" * 64,
+                                    "published_caption": self.catalog["videos"][0]["title"],
+                                    "title_candidate": "旧标题", "hashtags": ["#旧标签"],
+                                    "cover_status": "ok", "cover_text_raw": "旧封面字"}, ensure_ascii=False) + "\n")
+        CONTROLLER.write_library_index(self.fixture.root, self.fixture.catalog_path)
+        with (self.fixture.root / "catalog/作品数据指标.csv").open(encoding="utf-8-sig", newline="") as stream:
+            first = next(csv.DictReader(stream))
+        self.assertEqual(first["cover_status"], "未获取")
+        self.assertNotIn("旧封面字", (self.fixture.root / "视频与逐字稿索引.md").read_text())
+        self.assertIn(video_id, CONTROLLER.snapshot(self.fixture.root, self.fixture.catalog_path)["cover_metadata_missing_ids"])
+
     def test_tampered_metrics_cannot_be_exported_with_original_page_evidence(self):
         value = json.loads(self.fixture.catalog_path.read_text())
         value["videos"][0]["statistics"]["digg_count"] += 1
@@ -110,7 +153,7 @@ class CreatorMetricsIntegrationTests(unittest.TestCase):
 
         def existing_catalog(command, log, root, catalog_path, limit, stage):
             stages.append(stage)
-            if stage == "collect":
+            if stage in ("collect", "metadata"):
                 return 0  # Our fixture already contains a real, complete SDK capture.
             if stage == "export":
                 return self.fixture.run_export()
@@ -123,7 +166,7 @@ class CreatorMetricsIntegrationTests(unittest.TestCase):
              patch.object(CONTROLLER.subprocess, "Popen", side_effect=AssertionError("Unexpected child process")), \
              contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(CONTROLLER.main(), 0)
-        self.assertEqual(stages, ["collect", "export"])
+        self.assertEqual(stages, ["collect", "metadata", "export"])
         summary = json.loads((self.fixture.root / "pipeline-summary.json").read_text())
         self.assertTrue(summary["corpus_exported"])
         self.assertTrue(summary["all_public_videos_transcribed"])
