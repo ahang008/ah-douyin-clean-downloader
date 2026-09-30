@@ -45,6 +45,7 @@ VIDEO_ID_PATTERN = re.compile(r"^[0-9]{16,22}$")
 HASHTAG_PATTERN = re.compile(r"[#＃]([\w]+)", re.UNICODE)
 LOW_CONFIDENCE = 0.65
 SUCCESS_STATUSES = frozenset({"ok", "ocr_low_confidence", "ocr_empty"})
+WEB_DETAIL_SOURCE = "official_aweme_web_detail.video.cover"
 RECORD_NAME = "作品标题标签封面.jsonl"
 REPORT_NAME = "cover-metadata-report.json"
 INDEX_NAME = "标题标签封面索引.md"
@@ -139,17 +140,37 @@ def load_records(path: Path) -> dict[str, dict]:
 
 
 def record(video_id: str, image: Path | None, status: str, lines: list[dict] | None = None,
-           captured_at: str | None = None) -> dict:
+           captured_at: str | None = None, source: str = "official_aweme_feed.video.cover") -> dict:
     lines = lines or []
     return {
         "video_id": video_id,
         "cover_image_path": str(image.resolve()) if image else None,
-        "cover_source": "official_aweme_feed.video.cover" if image else None,
+        "cover_source": source if image else None,
         "cover_captured_at_utc": captured_at,
         "cover_text_raw": "\n".join(str(line.get("text") or "") for line in lines).strip(),
         "cover_status": status,
         "ocr_lines": lines,
     }
+
+
+def verified_web_detail_marker(video_id: str, image: Path) -> bool:
+    marker = image.with_suffix(".source.json")
+    if marker.is_symlink() or not marker.is_file():
+        return False
+    try:
+        saved = json.loads(marker.read_text(encoding="utf-8"))
+        return (isinstance(saved, dict) and saved.get("video_id") == video_id
+                and saved.get("cover_source") == WEB_DETAIL_SOURCE
+                and saved.get("cover_image_sha256") == hashlib.sha256(image.read_bytes()).hexdigest())
+    except (OSError, ValueError):
+        return False
+
+
+def reusable_cover(video_id: str, saved: dict, image: Path) -> bool:
+    return (saved.get("cover_status") in SUCCESS_STATUSES and not image.is_symlink()
+            and valid_jpeg(image)
+            and (saved.get("cover_source") != WEB_DETAIL_SOURCE
+                 or verified_web_detail_marker(video_id, image)))
 
 
 def merged_record(work: dict, cover: dict | None) -> dict:
@@ -224,9 +245,13 @@ def convert_to_jpeg(source: Path, destination: Path) -> bool:
 
 def fetch_one(video_id: str, image_dir: Path, proxy: str | None) -> dict:
     destination = image_dir / f"{video_id}.jpg"
+    if destination.is_symlink():
+        raise ValueError("cover destination must not be a symlink")
     if valid_jpeg(destination):
         cached_at = datetime.fromtimestamp(destination.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
-        return record(video_id, destination, "ocr_pending", captured_at=cached_at)
+        # Existing JPEG bytes alone cannot prove whether the feed or web detail supplied them.
+        source = WEB_DETAIL_SOURCE if verified_web_detail_marker(video_id, destination) else "cached_cover_source_unverified"
+        return record(video_id, destination, "ocr_pending", captured_at=cached_at, source=source)
     destination.unlink(missing_ok=True)
 
     with tempfile.TemporaryDirectory(prefix=f"cover-{video_id}-") as temp_name:
@@ -334,14 +359,16 @@ def run_ocr(works: list[dict], images: dict[str, Path], script: Path,
                 status = ocr_status(lines, result.get("error"))
                 lines = [row for row in lines if isinstance(row, dict)]
                 captured_at = records.get(video_id, {}).get("cover_captured_at_utc")
-                records[video_id] = record(video_id, images[video_id], status, lines, captured_at)
+                source = records.get(video_id, {}).get("cover_source") or "official_aweme_feed.video.cover"
+                records[video_id] = record(video_id, images[video_id], status, lines, captured_at, source)
                 save_records(output, works, records)
             exit_code = process.wait()
     for video_id, image in images.items():
         if records.get(video_id, {}).get("cover_status") == "ocr_pending":
             captured_at = records.get(video_id, {}).get("cover_captured_at_utc")
+            source = records.get(video_id, {}).get("cover_source") or "official_aweme_feed.video.cover"
             records[video_id] = record(video_id, image, "ocr_process_failed" if exit_code else "ocr_no_result",
-                                       captured_at=captured_at)
+                                       captured_at=captured_at, source=source)
     save_records(output, works, records)
 
 
@@ -445,15 +472,19 @@ def main() -> int:
         return 2
     root = args.root.expanduser().resolve()
     image_dir = root / "covers"
+    if image_dir.is_symlink():
+        print("covers directory must not be a symlink", file=sys.stderr)
+        return 2
     image_dir.mkdir(parents=True, exist_ok=True)
+    if not image_dir.is_dir() or image_dir.resolve().parent != root:
+        print("covers directory is outside the creator library", file=sys.stderr)
+        return 2
     output = root / "catalog" / RECORD_NAME
     output.parent.mkdir(parents=True, exist_ok=True)
     records = load_records(output)
     ids = [work["video_id"] for work in (works[:args.limit] if args.limit else works)]
-    todo = [video_id for video_id in ids if not (
-        records.get(video_id, {}).get("cover_status") in SUCCESS_STATUSES
-        and valid_jpeg(image_dir / f"{video_id}.jpg")
-    )]
+    todo = [video_id for video_id in ids if not reusable_cover(
+        video_id, records.get(video_id, {}), image_dir / f"{video_id}.jpg")]
     # Limit feed traffic to at most three concurrent videos and space requests.
     if todo:
         with ThreadPoolExecutor(max_workers=3) as pool:

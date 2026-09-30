@@ -84,6 +84,26 @@ class CreatorMetricsIntegrationTests(unittest.TestCase):
         self.assertTrue(Path(rows[0]["transcript_path"]).is_file())
         self.assertEqual(rows[0]["statistics_captured_at"], self.catalog["videos"][0]["statistics_captured_at"])
 
+    def test_snapshot_marks_existing_corpus_stale_when_report_no_longer_matches(self):
+        self.assertEqual(self.fixture.run_export(), 0)
+        self.assertTrue(CONTROLLER.snapshot(self.fixture.root, self.fixture.catalog_path)["corpus_exported"])
+        report_path = self.fixture.root / "corpus-export.json"
+        report = json.loads(report_path.read_text())
+        report["entries"] = 1
+        report_path.write_text(json.dumps(report))
+        self.assertFalse(CONTROLLER.snapshot(self.fixture.root, self.fixture.catalog_path)["corpus_exported"])
+
+    def test_snapshot_rejects_tampered_corpus_files_even_when_paths_exist(self):
+        for kind in ("markdown", "jsonl"):
+            with self.subTest(kind=kind):
+                self.assertEqual(self.fixture.run_export(), 0)
+                report = json.loads((self.fixture.root / "corpus-export.json").read_text())
+                self.assertTrue(CONTROLLER.snapshot(self.fixture.root, self.fixture.catalog_path)["corpus_exported"])
+                Path(report[kind]).write_text("bad", encoding="utf-8")
+                summary = CONTROLLER.snapshot(self.fixture.root, self.fixture.catalog_path)
+                self.assertTrue(summary["all_public_videos_transcribed"])
+                self.assertFalse(summary["corpus_exported"])
+
     def test_cover_metadata_enriches_index_csv_and_corpus_without_changing_asr(self):
         video_id = self.fixture.ids[0]
         image = self.fixture.root / "covers" / (video_id + ".jpg")

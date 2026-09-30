@@ -89,7 +89,7 @@ def validated_pagination(catalog, catalog_path):
     pages = catalog.get("page_evidence")
     if not isinstance(pages, list) or not pages:
         raise ValueError("Saved public pagination evidence is required")
-    expected_cursor, cursors, seen, evidence_paths = 0, set(), {}, []
+    expected_cursor, cursors, seen, foreign, evidence_paths = 0, set(), {}, {}, []
     for number, page in enumerate(pages, 1):
         if not isinstance(page, dict):
             raise ValueError("Invalid pagination evidence record")
@@ -118,31 +118,53 @@ def validated_pagination(catalog, catalog_path):
         if not isinstance(payload, dict):
             raise ValueError("Saved page data is not an object")
         rows = payload.get("aweme_list")
+        foreign_rows = payload.get("excluded_foreign_author_works", [])
         returned, more = payload.get("max_cursor"), payload.get("has_more")
         if (payload.get("status_code") != 0 or not isinstance(rows, list)
+                or not isinstance(foreign_rows, list)
                 or not isinstance(returned, int) or isinstance(returned, bool) or returned < 0
                 or not isinstance(more, (int, bool)) or more not in (0, 1)
                 or returned != page.get("returned_cursor") or bool(more) != page.get("has_more")
                 or (payload.get("not_login_module") or {}).get("guide_login_tip_exist")
-                or (number == 1 and not rows) or page.get("returned_works") != len(rows)):
+                or (number == 1 and not rows and not foreign_rows)
+                or page.get("returned_works") != len(rows)
+                or page.get("excluded_foreign_author_works", 0) != len(foreign_rows)):
             raise ValueError("Saved page data does not match pagination evidence")
         fresh = 0
         for row in rows:
             work = helper.normalize_work(row, sec_uid)
+            if work["video_id"] in foreign:
+                raise ValueError("Work ID appears under both the requested and a foreign author")
             if work["video_id"] not in seen:
                 seen[work["video_id"]] = {**work, "catalog_page": number}
                 fresh += 1
-        if fresh != page.get("new_unique_works") or (more and not fresh):
+        for row in foreign_rows:
+            if not isinstance(row, dict) or not isinstance(row.get("is_video"), bool):
+                raise ValueError("Invalid excluded foreign-author projection")
+            projected = helper.excluded_foreign_work({
+                "aweme_id": row.get("video_id"), "desc": row.get("title"),
+                "aweme_type": 0 if row["is_video"] else 68,
+                "images": None if row["is_video"] else [{}], "author": row.get("author")}, sec_uid)
+            if row["video_id"] in seen:
+                raise ValueError("Work ID appears under both the requested and a foreign author")
+            if row != projected:
+                raise ValueError("Excluded foreign-author identity differs from saved page")
+            foreign.setdefault(row["video_id"], {**row, "catalog_page": number})
+        if fresh != page.get("new_unique_works") or (more and not fresh and not foreign_rows):
             raise ValueError("Pagination unique-work evidence is inconsistent")
         if bool(more) != (number < len(pages)):
             raise ValueError("Pagination does not end at the actual terminal response")
         expected_cursor = returned
         evidence_paths.append(path)
+    if set(seen).intersection(foreign):
+        raise ValueError("Work ID appears under both the requested and a foreign author")
     videos = [row for row in seen.values() if row["is_video"]]
     others = [row for row in seen.values() if not row["is_video"]]
     if (videos != catalog.get("videos") or others != catalog.get("non_video_works")
             or len(videos) != catalog.get("video_count") or len(others) != catalog.get("non_video_work_count")
-            or len(seen) != catalog.get("work_count") or expected_cursor != catalog.get("cursor")):
+            or len(seen) != catalog.get("work_count") or expected_cursor != catalog.get("cursor")
+            or list(foreign.values()) != catalog.get("excluded_foreign_author_works", [])
+            or len(foreign) != catalog.get("excluded_foreign_author_count", 0)):
         raise ValueError("Catalog works differ from the hash-verified public pagination chain")
     return evidence_paths
 
@@ -165,7 +187,8 @@ def catalog_records(args):
 def readiness(args, videos):
     manifest = read_json(args.root / "media/download-manifest.json").get("videos", {})
     jobs = read_json(args.root / "local-transcripts/_batch-state.json").get("jobs", {})
-    ready, missing = 0, []
+    helper = load_local_helper("transcribe_local.py", "corpus_asr_quality")
+    ready, missing, quality_review = 0, [], []
     for row in videos:
         video_id = row["video_id"]
         directory = args.root / "local-transcripts" / video_id
@@ -174,10 +197,19 @@ def readiness(args, videos):
         complete = jobs.get(video_id, {}).get("status") in SUCCESS and all(path.is_file() and path.stat().st_size for path in files)
         complete = complete and media.get("status") == "verified" and bool(media.get("path")) and Path(media["path"]).is_file()
         if complete:
+            evidence = read_json(PATHS.resolve_artifact_paths(directory)["evidence"])
+            flags = helper.machine_quality_flags({"text": evidence.get("raw_text"),
+                                                  "segments": evidence.get("segments")},
+                                                 float((evidence.get("source_audio") or {}).get("duration_seconds", 0)))
+            if flags or evidence.get("status") == "machine_draft_requires_review":
+                quality_review.append(video_id)
+                complete = False
+        if complete:
             ready += 1
         else:
             missing.append(video_id)
-    return {"ready": ready, "expected": len(videos), "missing_ids": missing, "all_ready": not missing}, manifest
+    return {"ready": ready, "expected": len(videos), "missing_ids": missing,
+            "quality_review_ids": quality_review, "all_ready": not missing}, manifest
 
 
 def collect_existing_text(args, catalog, videos, manifest):
@@ -215,6 +247,8 @@ def collect_existing_text(args, catalog, videos, manifest):
         if not isinstance(segments, list) or any(not isinstance(segment, dict) for segment in segments):
             raise ValueError("ASR segments are missing for " + video_id)
         helper.validate_result({"text": evidence.get("raw_text"), "segments": segments}, duration)
+        if helper.machine_quality_flags({"text": evidence.get("raw_text"), "segments": segments}, duration):
+            raise ValueError("Machine output requires audio review for " + video_id)
         digests = {}
         for kind in ("markdown", "srt"):
             digests[kind] = hashlib.sha256(files[kind].read_bytes()).hexdigest()
@@ -351,6 +385,8 @@ def export(args, catalog, videos, manifest):
             temporary.unlink(missing_ok=True)
     report = {"event": "corpus_exported", "entries": len(records),
                       "markdown": str(args.markdown_output), "jsonl": str(args.jsonl_output),
+                      "markdown_sha256": hashlib.sha256(args.markdown_output.read_bytes()).hexdigest(),
+                      "jsonl_sha256": hashlib.sha256(args.jsonl_output.read_bytes()).hexdigest(),
                       "total_characters": sum(row["character_count"] for row in records),
                       "source_catalog_sha256": args.catalog_sha256, "pagination_hashes_verified": True,
                       "source_outputs_preserved": True, "llm_calls": 0}
@@ -392,7 +428,8 @@ def main():
         status, manifest = readiness(args, videos)
         if status["ready"] != previous:
             print(json.dumps({"event": "corpus_readiness", "ready": status["ready"],
-                              "expected": status["expected"], "all_ready": status["all_ready"]}), flush=True)
+                              "expected": status["expected"], "all_ready": status["all_ready"],
+                              "quality_review_ids": status["quality_review_ids"]}), flush=True)
             previous = status["ready"]
         if args.check:
             if status["all_ready"]:

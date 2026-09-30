@@ -28,6 +28,8 @@ MLX 转写需要 Apple Silicon Mac、macOS 15+、Python 3.12 与 ffmpeg/ffprobe�
 
 `catalog_complete=false` 时检查首游标、连续衔接、作者匹配、登录过滤和真实终点。游标重复、断链、空响应或分页上限都不能凭主页计数补成 complete。新刷新失败不能借旧 complete 目录宣称刷新成功。
 
+主页分页混入异作者作品时查看目录的 `excluded_foreign_author_works` 和 hash 校验的分页证据。异作者作品单列，不计入本人的完整视频数；缺少可验证作者身份的行仍中止采集。
+
 图片作品、不可访问作品或已删除内容按实际范围说明。`--limit` 是样本，样本文件齐全不等于全量。
 
 ## 网络指向 198.18.* 或连接中断
@@ -39,5 +41,9 @@ MLX 转写需要 Apple Silicon Mac、macOS 15+、Python 3.12 与 ffmpeg/ffprobe�
 ## 下载、识别或合集未完成
 
 查看 `pipeline-summary.json` 的两个全量标志、`missing_download_ids` 与 `missing_transcript_ids`，再检查对应的 `logs/download.log` 或 `logs/transcribe.log`。ASR 错误不应一律要求重新扫码。下载完成后的识别收尾仍需读取最终清单；失败或缺失项使本次运行保持未完成。
+
+旧详情接口返回其他推荐作品时，检查 `logs/web_detail_recovery.log` 与 `catalog/web-detail-media-recovery-report.json`。Skill 只接受官方网页详情里的目标 ID 和同一作者；官方页也未返回目标时保留缺失，不猜测私密或删除。封面详情缺口查看独立的 `web-detail-cover-recovery-report.json`，网页封面来源不得写成 feed 来源。
+
+长视频时间码局部倒序时查看 `local-transcripts/_failed/<视频ID>/` 下原始机器结果与局部对齐证据；复跑可复用原识别正文，只重识别相邻短窗口。若相邻三段词不一致，停止自动修复并保留缺口。`quality_review_ids` 中的短片机器输出是待听核，不当作可用逐字稿；旧版留下的重复句文件不删除，先核原声再另存校对稿。
 
 执行原命令续跑，校验并跳过已完成项。合集由实际已验证正文导出，样本或旧合集不能代替全量目录验收。低置信、重复、尾段对齐或专名问题仍需听原片核对，另存校对版，保留机器原稿。

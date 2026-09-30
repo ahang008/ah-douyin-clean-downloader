@@ -2,7 +2,7 @@
 
 同一个 Codex Skill 下载单条抖音原视频、交付校对后的单条逐字稿与 SRT、归档博主公开作品并生成本地机器稿，也能把已有完整资料库按点赞排序批量改写成口播稿。
 
-这是 [阿杭 Skills](https://github.com/ahang008/ah-skills) 旗下的独立仓库，本分支功能版本为 **v0.5.0**。仅用于你自有或已获授权的公开内容。
+这是 [阿杭 Skills](https://github.com/ahang008/ah-skills) 旗下的独立仓库，当前功能版本为 **v0.6.0**。仅用于你自有或已获授权的公开内容。
 
 ## 按请求选择流程
 
@@ -33,16 +33,6 @@ python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-installer/scripts/inst
 ```
 
 安装到 `~/.codex/skills/ah-douyin-clean-downloader/`，新开一轮 Codex 对话即可使用。无需安装第二份整号或改写 Skill。内置安装器遇到已存在的同名目录会拒绝覆盖；上述命令用于新安装，不是本机升级命令。更新已有安装时先比较源文件，保留本机私有运行数据。
-
-要新安装尚未合并的 v0.5.0 开发分支，在标准命令中指定 ref：
-
-```bash
-python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
-  --repo ahang008/ah-douyin-clean-downloader \
-  --ref feat/creator-batch-offline \
-  --path . \
-  --name ah-douyin-clean-downloader
-```
 
 也可直接克隆：
 
@@ -106,7 +96,7 @@ python3 "$SKILL_DIR/scripts/download_douyin.py" "<完整官方视频链接或口
 "$SKILL_DIR/.venv/bin/python" "$SKILL_DIR/scripts/run_creator.py"   "https://www.douyin.com/user/<sec_uid>"   --root "/absolute/path/creator-library"   --browser-session
 ```
 
-这是默认采集路线，`--browser-session` 可显式保留。用户在专用正常 Edge 官方窗口普通扫码并在手机确认登录，随后脚本自动分页、下载、本地识别和合并，不需要模型 Computer Use。同一命令和同一资料库可中断后续跑；已有验证文件跳过。需要采集新作品时加 `--refresh-catalog`。
+这是默认采集路线，`--browser-session` 可显式保留。用户在专用正常 Edge 官方窗口普通扫码并在手机确认登录，随后脚本自动分页、下载、本地识别和合并，不需要模型 Computer Use。同一命令和同一资料库可中断后续跑；已有验证文件跳过。混入分页的异作者作品会单列排除；同一 ID 被归给不同作者时不会判目录完整。旧详情接口若未返回目标作品，流程只在抖音官方网页详情重新核对视频 ID 和作者后补原片及封面。需要采集新作品时加 `--refresh-catalog`。
 
 批量原片、机器稿、SRT 和证据保留；成功后自动导出 `<作者>-N条机器逐字稿合集.md` 与 `catalog/transcripts-N.jsonl`，并保存 `catalog/作品标题标签封面.jsonl`、封面 JPEG 和 `标题标签封面索引.md`。已有机器稿还会生成 `annotated-transcripts/<视频ID>/` 下的逐条阅读副本，把标题、标签及封面识字结果放在原机器稿前面，原件字节不改；人工改过的副本不会被静默覆盖。封面识别用本地 OCR，低置信度与空结果分别标记；机器识字不等于人工核对。完整参数、目录结构和验收见 [整号批量流程](references/creator-batch.md)。不要把单条模式的清理规则用于批量资料库。
 
@@ -149,7 +139,7 @@ python3 "$SKILL_DIR/scripts/batch_rewrite.py" check \
 
 ## 完成与隐私
 
-`catalog_complete=true`、两个全量保存标志均为 true、缺失 ID 为空且文件校验通过，才可称当前公开视频范围完成。官方首页计数、样本下载成功或旧合集均不足以证明全量；机器稿完成也不代表已人工校对。
+`catalog_complete=true`、两个全量保存标志均为 true、缺失 ID 和 `quality_review_ids` 为空且文件校验通过，才可称当前公开视频范围完成。短片机器输出若出现重复句、单段周期重复、极少文字或长空尾，会保留原结果供听音复核，但不计入完整逐字稿或合集。局部倒序时间码只在相邻文字完全匹配时用原片短窗口对齐修复，保留原始失败结果和修复证据。合集报告还需与当前两个导出文件的 SHA-256 一致。官方首页计数、样本下载成功或旧合集均不足以证明全量；机器稿完成也不代表已人工校对。
 
 维护实测验证过连续官方分页、完整原片与机器稿/SRT/证据、续跑校验跳过和正常退出。作品数与导出数量以每次实际资料库为准。公开仓库不包含真实媒体、全文、登录截图或浏览器资料目录。
 
