@@ -265,6 +265,8 @@ class BrowserCatalog:
                 errors.append("Nonterminal page contains no new unique works")
                 break
         filtered = any(page["not_login_module"]["guide_login_tip_exist"] for page in chain)
+        if set(seen).intersection(foreign):
+            errors.append("Work ID appears under both the requested and a foreign author")
         videos = [work for work in seen.values() if work["is_video"]]
         others = [work for work in seen.values() if not work["is_video"]]
         complete = bool(videos) and exhausted and not filtered and not errors

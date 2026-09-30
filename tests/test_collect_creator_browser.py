@@ -84,6 +84,21 @@ class BrowserCollectionFixtures(unittest.TestCase):
         page = Path(value["page_evidence"][0]["file"])
         self.assertNotIn("SECRET_SENTINEL_123", page.read_text())
 
+    def test_same_work_id_under_target_and_foreign_authors_never_completes(self):
+        target = work(1)
+        foreign = work(1, "MS4wLjDifferentCreator")
+        for foreign_first in (False, True):
+            with self.subTest(foreign_first=foreign_first):
+                output = self.path.with_name(f"identity-conflict-{foreign_first}.json")
+                recorder = MODULE.BrowserCatalog(SEC_UID, output)
+                first, second = (foreign, target) if foreign_first else (target, foreign)
+                first_page, second_page = payload([first], 90, 1), payload([second], 0, 0)
+                recorder.add(0, first_page, json.dumps(first_page).encode())
+                recorder.add(90, second_page, json.dumps(second_page).encode())
+                saved = recorder.save()
+                self.assertFalse(saved["catalog_complete"])
+                self.assertTrue(any("both" in error for error in saved["errors"]))
+
     def test_missing_foreign_author_identity_still_rejects_page(self):
         invalid = work(2, "")
         with self.assertRaises(ValueError):

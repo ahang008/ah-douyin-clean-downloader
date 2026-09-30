@@ -133,6 +133,8 @@ def validated_pagination(catalog, catalog_path):
         fresh = 0
         for row in rows:
             work = helper.normalize_work(row, sec_uid)
+            if work["video_id"] in foreign:
+                raise ValueError("Work ID appears under both the requested and a foreign author")
             if work["video_id"] not in seen:
                 seen[work["video_id"]] = {**work, "catalog_page": number}
                 fresh += 1
@@ -143,7 +145,9 @@ def validated_pagination(catalog, catalog_path):
                 "aweme_id": row.get("video_id"), "desc": row.get("title"),
                 "aweme_type": 0 if row["is_video"] else 68,
                 "images": None if row["is_video"] else [{}], "author": row.get("author")}, sec_uid)
-            if row != projected or row["video_id"] in seen:
+            if row["video_id"] in seen:
+                raise ValueError("Work ID appears under both the requested and a foreign author")
+            if row != projected:
                 raise ValueError("Excluded foreign-author identity differs from saved page")
             foreign.setdefault(row["video_id"], {**row, "catalog_page": number})
         if fresh != page.get("new_unique_works") or (more and not fresh and not foreign_rows):
@@ -152,6 +156,8 @@ def validated_pagination(catalog, catalog_path):
             raise ValueError("Pagination does not end at the actual terminal response")
         expected_cursor = returned
         evidence_paths.append(path)
+    if set(seen).intersection(foreign):
+        raise ValueError("Work ID appears under both the requested and a foreign author")
     videos = [row for row in seen.values() if row["is_video"]]
     others = [row for row in seen.values() if not row["is_video"]]
     if (videos != catalog.get("videos") or others != catalog.get("non_video_works")
@@ -379,6 +385,8 @@ def export(args, catalog, videos, manifest):
             temporary.unlink(missing_ok=True)
     report = {"event": "corpus_exported", "entries": len(records),
                       "markdown": str(args.markdown_output), "jsonl": str(args.jsonl_output),
+                      "markdown_sha256": hashlib.sha256(args.markdown_output.read_bytes()).hexdigest(),
+                      "jsonl_sha256": hashlib.sha256(args.jsonl_output.read_bytes()).hexdigest(),
                       "total_characters": sum(row["character_count"] for row in records),
                       "source_catalog_sha256": args.catalog_sha256, "pagination_hashes_verified": True,
                       "source_outputs_preserved": True, "llm_calls": 0}

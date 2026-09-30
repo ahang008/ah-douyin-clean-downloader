@@ -3,7 +3,9 @@
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
+import tempfile
 import unittest
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/recover_official_web_detail.py"
@@ -68,6 +70,65 @@ class OfficialWebDetailRecoveryTests(unittest.TestCase):
 
         context = SimpleNamespace(new_page=Page)
         self.assertEqual(MODULE.web_detail(context, VIDEO_ID), item)
+
+    def test_media_recovery_rejects_author_directory_symlink_before_any_download(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "library"
+            outside = Path(temporary) / "outside"
+            (root / "media").mkdir(parents=True)
+            outside.mkdir()
+            (root / "media" / "Fixture Creator").symlink_to(outside, target_is_directory=True)
+            with patch.object(MODULE.backend, "CurlClient", side_effect=AssertionError("network attempted")):
+                with self.assertRaisesRegex(RuntimeError, "符号链接"):
+                    MODULE.recover_media(root, {}, VIDEO_ID, "Fixture Creator", None)
+            self.assertEqual(list(outside.iterdir()), [])
+
+    def test_media_recovery_rejects_media_root_symlink(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "library"
+            outside = Path(temporary) / "outside"
+            root.mkdir()
+            outside.mkdir()
+            (root / "media").symlink_to(outside, target_is_directory=True)
+            with patch.object(MODULE.backend, "CurlClient", side_effect=AssertionError("network attempted")):
+                with self.assertRaisesRegex(RuntimeError, "unsafe_library_subdirectory_symlink:media"):
+                    MODULE.recover_media(root, {}, VIDEO_ID, "Fixture Creator", None)
+            self.assertEqual(list(outside.iterdir()), [])
+
+    def test_cover_recovery_rejects_covers_directory_symlink_without_external_write(self):
+        item = {"video": {"cover": {"url_list": ["https://p16.douyinpic.com/fixture.jpg"]}}}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "library"
+            outside = Path(temporary) / "outside"
+            root.mkdir()
+            outside.mkdir()
+            (root / "covers").symlink_to(outside, target_is_directory=True)
+
+            def fake_convert(_source, destination):
+                destination.write_bytes(b"external write must be blocked")
+                return True
+
+            with patch.object(MODULE.covers, "routes", return_value=[None]), \
+                 patch.object(MODULE.covers, "curl_to", return_value=True), \
+                 patch.object(MODULE.covers, "convert_to_jpeg", side_effect=fake_convert), \
+                 patch.object(MODULE.covers, "valid_jpeg", return_value=False):
+                with self.assertRaisesRegex(RuntimeError, "unsafe_library_subdirectory_symlink:covers"):
+                    MODULE.recover_cover(root, item, VIDEO_ID, None)
+            self.assertEqual(list(outside.iterdir()), [])
+
+    def test_cover_recovery_rejects_cached_image_symlink_without_false_success(self):
+        item = {"video": {"cover": {"url_list": ["https://p16.douyinpic.com/fixture.jpg"]}}}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "library"
+            cover_dir = root / "covers"
+            cover_dir.mkdir(parents=True)
+            outside = Path(temporary) / "outside.jpg"
+            outside.write_bytes(b"unchanged outside fixture")
+            (cover_dir / (VIDEO_ID + ".jpg")).symlink_to(outside)
+            with patch.object(MODULE.covers, "valid_jpeg", return_value=True):
+                with self.assertRaisesRegex(RuntimeError, "unsafe_cover_destination_symlink"):
+                    MODULE.recover_cover(root, item, VIDEO_ID, None)
+            self.assertEqual(outside.read_bytes(), b"unchanged outside fixture")
 
 
 if __name__ == "__main__":

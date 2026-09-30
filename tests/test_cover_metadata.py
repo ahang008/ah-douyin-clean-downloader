@@ -164,6 +164,77 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(MODULE.ocr_status([]), "ocr_empty")
         self.assertEqual(MODULE.ocr_status([], "image_decode_failed"), "ocr_image_decode_failed")
 
+    def test_ocr_success_and_failure_preserve_verified_web_detail_source(self):
+        works, _, _ = MODULE.load_catalog(self.catalog_path)
+        image = self.root / "covers" / (IDS[0] + ".jpg")
+        image.parent.mkdir()
+        image.write_bytes(b"synthetic image bytes")
+        output = self.root / "catalog" / MODULE.RECORD_NAME
+
+        class FakeProcess:
+            def __init__(self, lines, exit_code):
+                self.stdout = iter(lines)
+                self.exit_code = exit_code
+            def wait(self):
+                return self.exit_code
+
+        for lines, code, expected in (([json.dumps({"video_id": IDS[0], "ocr_lines": [
+                {"text": "封面字", "confidence": 0.9}]}) + "\n"], 0, "ok"),
+                                      ([], 1, "ocr_process_failed")):
+            with self.subTest(expected=expected):
+                records = {IDS[0]: MODULE.record(IDS[0], image, "ocr_pending",
+                                                 source=MODULE.WEB_DETAIL_SOURCE)}
+                with patch.object(MODULE.subprocess, "Popen", return_value=FakeProcess(lines, code)):
+                    MODULE.run_ocr(works, {IDS[0]: image}, Path("synthetic-ocr.swift"), records, output)
+                self.assertEqual(records[IDS[0]]["cover_status"], expected)
+                self.assertEqual(records[IDS[0]]["cover_source"], MODULE.WEB_DETAIL_SOURCE)
+
+    def test_changed_web_detail_cover_cannot_skip_with_stale_source_marker(self):
+        works, _, _ = MODULE.load_catalog(self.catalog_path)
+        cover = self.root / "covers" / (IDS[0] + ".jpg")
+        cover.parent.mkdir()
+        cover.write_bytes(b"\xff\xd8\xff" + b"a" * 128)
+        marker = cover.with_suffix(".source.json")
+        marker.write_text(json.dumps({"video_id": IDS[0], "cover_source": MODULE.WEB_DETAIL_SOURCE,
+                                      "cover_image_sha256": hashlib.sha256(cover.read_bytes()).hexdigest()}))
+        old = MODULE.record(IDS[0], cover, "ok", [{"text": "旧封面", "confidence": 0.9}],
+                            source=MODULE.WEB_DETAIL_SOURCE)
+        MODULE.save_records(self.root / "catalog" / MODULE.RECORD_NAME, works, {IDS[0]: old})
+        argv = [str(SCRIPT), "--catalog", str(self.catalog_path), "--root", str(self.root), "--limit", "1"]
+        with patch.object(MODULE.shutil, "which", return_value="/bin/tool"), \
+             patch.object(MODULE, "valid_jpeg", return_value=True), \
+             patch.object(MODULE, "fetch_one", side_effect=AssertionError("valid marker should skip")), \
+             patch("sys.argv", argv):
+            self.assertEqual(MODULE.main(), 0)
+
+        cover.write_bytes(b"\xff\xd8\xff" + b"b" * 128)
+
+        def synthetic_ocr(_works, images, _script, records, _output):
+            self.assertIn(IDS[0], images)
+            previous = records[IDS[0]]
+            records[IDS[0]] = MODULE.record(IDS[0], images[IDS[0]], "ocr_empty",
+                                            source=previous["cover_source"])
+
+        with patch.object(MODULE.shutil, "which", return_value="/bin/tool"), \
+             patch.object(MODULE, "valid_jpeg", return_value=True), \
+             patch.object(MODULE, "run_ocr", side_effect=synthetic_ocr), \
+             patch.object(MODULE.time, "sleep", return_value=None), \
+             patch("sys.argv", argv):
+            self.assertEqual(MODULE.main(), 0)
+        rows = [json.loads(line) for line in (self.root / "catalog" / MODULE.RECORD_NAME).read_text().splitlines()]
+        self.assertEqual(rows[0]["cover_source"], "cached_cover_source_unverified")
+        self.assertEqual(rows[0]["cover_status"], "ocr_empty")
+
+    def test_metadata_stage_rejects_covers_directory_symlink(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        (self.root / "covers").symlink_to(outside, target_is_directory=True)
+        with patch.object(MODULE.shutil, "which", return_value="/bin/tool"), \
+             patch("sys.argv", [str(SCRIPT), "--catalog", str(self.catalog_path),
+                                "--root", str(self.root)]):
+            self.assertEqual(MODULE.main(), 2)
+        self.assertEqual(list(outside.iterdir()), [])
+
     def test_failure_keeps_one_metadata_row_per_catalog_video(self):
         with (patch.object(MODULE.shutil, "which", return_value="/bin/tool"),
               patch.object(MODULE, "valid_jpeg", return_value=False),

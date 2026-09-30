@@ -42,7 +42,7 @@ SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/ah-douyin-clean-downloader"
 
 网页 SDK 发出目标作者分页，脚本采集公开响应的必要字段、可用计数和游标证据。每页记录一次指标观察时间，不保存完整响应中的私人字段。分页里若混有其他作者作品，将其公开 ID、作者和排除原因单列在目录 `excluded_foreign_author_works`，不计入目标作者的视频或图文数；作者身份缺失或格式异常仍拒绝该页。完整目录会缓存；中断后执行同一命令，已通过源文件、输出与设置校验的原片和机器稿会跳过。运行中的同一资料库无需重复启动。完整目录取得后，批量流程还应为每个视频 ID 补采发布文案及官方选定封面，并在本机识别封面文字。
 
-旧 Aweme feed 接口若返回 `status_code=0` 但未包含目标视频 ID，下载和封面阶段会在专用 Edge 打开该作品的抖音官方网页，限定读取 `/aweme/v1/web/aweme/detail/`，同时核对目标 ID 与作者身份。网页播放源通过同一下载器与 ffprobe 验收，随后批次重新核验并接管 MP4；封面从 `video.cover` 取得，缓存来源校验标记后由本地 OCR 处理。失败保留原缺失 ID 和固定错误类别。报告位于 `catalog/web-detail-media-recovery-report.json` 或 `catalog/web-detail-cover-recovery-report.json`；不保存签名播放链接、Cookie、完整网页响应或浏览器资料。
+旧 Aweme feed 接口若返回 `status_code=0` 但未包含目标视频 ID，下载和封面阶段会在专用 Edge 打开该作品的抖音官方网页，限定读取 `/aweme/v1/web/aweme/detail/`，同时核对目标 ID 与作者身份。网页播放源通过同一下载器与 ffprobe 验收，随后批次重新核验并接管 MP4；封面从 `video.cover` 取得，缓存来源校验标记后由本地 OCR 处理。失败保留原缺失 ID 和固定错误类别。`catalog/web-detail-media-recovery-report.json` 与 `catalog/web-detail-cover-recovery-report.json` 不写入签名播放链接、Cookie 或完整网页响应；专用 Edge 的登录会话仍按浏览器正常行为保存在私有 `.browser-session/`，不得打包分享。
 
 要纳入新作品，在原命令加 `--refresh-catalog`。采集重新从游标 0 建链，完整后更新主目录；失败保留已有目录和已完成文件，不能用旧目录替本次失败宣称刷新成功。
 
@@ -178,7 +178,7 @@ python3 "$SKILL_DIR/scripts/build_annotated_transcripts.py" \
 - `catalog_complete=true`：目标作者从请求游标 0 开始连续分页到真实 `has_more=0`，作者一致，无登录过滤，视频清单非空。主页数字、HTTP 200、窗口出现或数量达到阈值均不够。
 - `all_public_videos_downloaded=true`：目录内每个视频都有已验证原片、SHA256、正时长与音视频流检查。
 - `all_public_videos_transcribed=true`：每个视频均有非空机器 Markdown、SRT 和识别证据，源文件/模型/输出校验通过，正文与片段、字幕对应，时间码在技术容差内。
-- `quality_review_ids` 为空：没有被短片重复句、仅一两字或稀疏长段质量关拦下的机器输出。若有值，原始机器文件仍保留供听核，但不计入 `transcript_saved`、完整合集或 `all_public_videos_transcribed`；`machine_draft_file_total` 单列已有机器文件数。质量关只提示需听核，不证明视频没有口播。
+- `quality_review_ids` 为空：没有被短片重复句、单段周期重复、极少文字、长空尾或稀疏长段质量关拦下的机器输出。若有值，原始机器文件仍保留供听核，但不计入 `transcript_saved`、完整合集或 `all_public_videos_transcribed`；`machine_draft_file_total` 单列已有机器文件数。质量关只提示需听核，不证明视频没有口播。
 - `cover_metadata_complete=true`：本次完整目录内每个视频都有对应的发布文案及封面处理记录，封面状态为 `ok`、`ocr_low_confidence` 或 `ocr_empty`；同时检查 `cover_metadata_missing_ids` 为空。这个标志只证明采集与机器识别结束，不证明封面文字正确。
 - `missing_download_ids` 与 `missing_transcript_ids` 均为空，未设置正数 `--limit`；导出的 N 与当前完整视频目录一致。
 

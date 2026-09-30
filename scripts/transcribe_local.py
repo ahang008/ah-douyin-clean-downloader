@@ -254,6 +254,22 @@ def machine_quality_flags(result: dict[str, Any], duration: float) -> list[str]:
         phrase, count = Counter(phrases).most_common(1)[0]
         if len(phrase) <= 20 and count >= 6 and count / len(phrases) >= 0.75:
             flags.append("short_phrase_repeated_across_clip")
+    if len(text) >= 24:
+        for size in range(2, min(20, len(text) // 4) + 1):
+            unit = text[:size]
+            repeats = 0
+            while text.startswith(unit, repeats * size):
+                repeats += 1
+            if repeats >= 4 and repeats * size / len(text) >= 0.8:
+                flags.append("short_phrase_repeated_within_machine_text")
+                break
+    if duration >= 12 and len(text) <= 12 and segments:
+        try:
+            last_end = max(float(segment["end"]) for segment in segments)
+        except (KeyError, TypeError, ValueError):
+            last_end = duration
+        if last_end <= min(3.0, duration * 0.2):
+            flags.append("very_sparse_machine_text_at_clip_start")
     for segment in segments:
         try:
             segment_duration = float(segment["end"]) - float(segment["start"])
