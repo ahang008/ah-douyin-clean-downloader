@@ -135,7 +135,7 @@ def parse_metadata(payload: dict, video_id: str) -> dict:
     aweme_list = payload.get("aweme_list") or []
     item = next((row for row in aweme_list if str(row.get("aweme_id")) == video_id), None)
     if not item:
-        raise DownloadError("抖音接口没有返回对应作品，作品可能已删除、设为私密或触发风控")
+        raise DownloadError("metadata_id_not_returned: 抖音接口没有返回对应作品，作品可能已删除、设为私密或触发风控")
     if item.get("images") and not item.get("video"):
         raise DownloadError("当前版本只下载视频作品，不处理图集")
     return item

@@ -25,7 +25,7 @@ SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/ah-douyin-clean-downloader"
 
 默认模型为 `mlx-community/whisper-large-v3-turbo`。首次下载公开权重需要网络和磁盘；模型已缓存后，识别只读本地文件，不调用 Hugging Face 推理服务或托管 ASR。
 
-如果已有官方公开目录，只运行 `--stage metadata`，使用系统 Python 3、macOS 的 `curl`、`sips` 和 `swift` 即可；这一步不需要安装 MLX、启动 Edge 或运行 ASR。
+如果已有官方公开目录，只运行 `--stage metadata`，不下载 MP4 或运行 ASR；正常封面请求使用系统 Python 3、`curl`、`sips` 和 `swift`。仅当旧接口没有返回目标封面时，自动开启同一专用 Edge 官方作品页补采，需已准备浏览器依赖。
 
 ## 运行、续跑和更新
 
@@ -40,13 +40,17 @@ SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/ah-douyin-clean-downloader"
 
 首次打开专用 Edge 官方页面时，用户用手机抖音“扫一扫”扫描二维码，并在手机确认登录或按平台提示完成验证；二维码失效时先点“点击刷新”。聊天中的“同意”只是授权，不是登录已完成的证据。模型无需 Computer Use。
 
-网页 SDK 发出目标作者分页，脚本采集公开响应的必要字段、可用计数和游标证据。每页记录一次指标观察时间，不保存完整响应中的私人字段。完整目录会缓存；中断后执行同一命令，已通过源文件、输出与设置校验的原片和机器稿会跳过。运行中的同一资料库无需重复启动。完整目录取得后，批量流程还应为每个视频 ID 补采发布文案及官方选定封面，并在本机识别封面文字；这一步无需下载 MP4 或调用模型 Computer Use。
+网页 SDK 发出目标作者分页，脚本采集公开响应的必要字段、可用计数和游标证据。每页记录一次指标观察时间，不保存完整响应中的私人字段。分页里若混有其他作者作品，将其公开 ID、作者和排除原因单列在目录 `excluded_foreign_author_works`，不计入目标作者的视频或图文数；作者身份缺失或格式异常仍拒绝该页。完整目录会缓存；中断后执行同一命令，已通过源文件、输出与设置校验的原片和机器稿会跳过。运行中的同一资料库无需重复启动。完整目录取得后，批量流程还应为每个视频 ID 补采发布文案及官方选定封面，并在本机识别封面文字。
+
+旧 Aweme feed 接口若返回 `status_code=0` 但未包含目标视频 ID，下载和封面阶段会在专用 Edge 打开该作品的抖音官方网页，限定读取 `/aweme/v1/web/aweme/detail/`，同时核对目标 ID 与作者身份。网页播放源通过同一下载器与 ffprobe 验收，随后批次重新核验并接管 MP4；封面从 `video.cover` 取得，缓存来源校验标记后由本地 OCR 处理。失败保留原缺失 ID 和固定错误类别。报告位于 `catalog/web-detail-media-recovery-report.json` 或 `catalog/web-detail-cover-recovery-report.json`；不保存签名播放链接、Cookie、完整网页响应或浏览器资料。
 
 要纳入新作品，在原命令加 `--refresh-catalog`。采集重新从游标 0 建链，完整后更新主目录；失败保留已有目录和已完成文件，不能用旧目录替本次失败宣称刷新成功。
 
 只更新已有库的公开指标与文件名，在原命令加 `--stage collect --refresh-catalog`。它会采集完整公开目录，再离线同步已有文件名、指标表和索引；已有全部机器稿通过校验时也会重建合集。新出现的视频会记录在目录里，需运行默认全流程才会下载和转写。
 
-默认并行下载与单路本地识别；下载收尾后会重新读取最终媒体清单，处理最后一轮新增的已校验媒体。若终止时仍有不可用媒体或识别失败，报告未完成并以非零状态退出，保留成果供续跑。
+默认并行下载与单路本地识别；下载收尾后会重新读取最终媒体清单，处理最后一轮新增的已校验媒体。机器时间码若只有局部倒序，流程先保存原始失败结果，再用原片附近不超过 30 秒的音频做一次本地词级对齐；只在相邻三段文字完全匹配且时间改动有界时修复时间码，不改机器识别用词。续跑优先复用源视频、音频及模型设置均匹配的原始失败结果，避免重识别整条长视频。若终止时仍有不可用媒体、识别失败或机器输出需听核，报告未完成并以非零状态退出，保留成果供续跑。
+
+质量关拦下短片后，执行者先自行核对原片证据：定位可能的人声窗口、用独立本地识别结果交叉检查，并按需抽取画面文字。能以原音频和一致文字修复局部时间码时，保留旧稿与修复证据后再更新机器稿；整段反复幻觉或无可交叉确认的口播时，保留原片、机器失败记录和画面文字摘录，写明可用内容与未解决边界。不要把常规排查直接转交用户，也不要把画面文字冒充口播逐字稿；没有实际听音时不能写“已人工听核”或断言绝对无口播。
 
 ## 参数
 
@@ -98,6 +102,7 @@ creator-library/
     赞1234_评56_藏78_转90_标题-ID.srt
     01-本地ASR识别证据.json          原始文本、片段、置信提示和源文件/模型信息
   local-transcripts/_batch-state.json
+  local-transcripts/_failed/<视频ID>/*-raw-invalid.json  原始识别失败结果；局部修复另有对齐证据
   annotated-transcripts/<视频ID>/<原机器稿文件名>.md  标注在前的阅读副本
   annotated-transcripts/_generated-state.json        生成记录与手改保护
   annotated-transcripts/annotation-report.json       已生成、缺失及状态计数
@@ -173,6 +178,7 @@ python3 "$SKILL_DIR/scripts/build_annotated_transcripts.py" \
 - `catalog_complete=true`：目标作者从请求游标 0 开始连续分页到真实 `has_more=0`，作者一致，无登录过滤，视频清单非空。主页数字、HTTP 200、窗口出现或数量达到阈值均不够。
 - `all_public_videos_downloaded=true`：目录内每个视频都有已验证原片、SHA256、正时长与音视频流检查。
 - `all_public_videos_transcribed=true`：每个视频均有非空机器 Markdown、SRT 和识别证据，源文件/模型/输出校验通过，正文与片段、字幕对应，时间码在技术容差内。
+- `quality_review_ids` 为空：没有被短片重复句、仅一两字或稀疏长段质量关拦下的机器输出。若有值，原始机器文件仍保留供听核，但不计入 `transcript_saved`、完整合集或 `all_public_videos_transcribed`；`machine_draft_file_total` 单列已有机器文件数。质量关只提示需听核，不证明视频没有口播。
 - `cover_metadata_complete=true`：本次完整目录内每个视频都有对应的发布文案及封面处理记录，封面状态为 `ok`、`ocr_low_confidence` 或 `ocr_empty`；同时检查 `cover_metadata_missing_ids` 为空。这个标志只证明采集与机器识别结束，不证明封面文字正确。
 - `missing_download_ids` 与 `missing_transcript_ids` 均为空，未设置正数 `--limit`；导出的 N 与当前完整视频目录一致。
 

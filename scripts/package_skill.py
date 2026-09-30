@@ -76,7 +76,7 @@ def release_files(root: Path) -> list[Path]:
 
 def build_package(root: Path, output: Path, version: str) -> dict:
     if not re.fullmatch(r"v?\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?", version):
-        raise ValueError("Version must look like v0.4.0")
+        raise ValueError("Version must look like v0.6.0")
     root = root.expanduser().resolve()
     paths = release_files(root)
     output = output.expanduser().resolve()
@@ -111,7 +111,7 @@ def build_package(root: Path, output: Path, version: str) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
-    parser.add_argument("--version", default="v0.5.0")
+    parser.add_argument("--version", default="v0.6.0")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     output = args.output or args.root / "dist" / f"{NAME}-{args.version}.zip"

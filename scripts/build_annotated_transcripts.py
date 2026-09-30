@@ -46,6 +46,18 @@ def load_paths_helper():
 PATHS = load_paths_helper()
 
 
+def load_asr_helper():
+    path = Path(__file__).resolve().with_name("transcribe_local.py")
+    spec = importlib.util.spec_from_file_location("annotation_asr_quality", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+ASR = load_asr_helper()
+
+
 def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -161,6 +173,10 @@ def read_machine_markdown(root: Path, video_id: str) -> tuple[Path, bytes] | Non
     if not isinstance(evidence, dict) or evidence.get("video_id") != video_id:
         raise ValueError("Machine evidence identity differs for " + video_id)
     if evidence.get("status") != "machine_draft_saved":
+        return None
+    if ASR.machine_quality_flags({"text": evidence.get("raw_text"),
+                                  "segments": evidence.get("segments")},
+                                 float((evidence.get("source_audio") or {}).get("duration_seconds", 0))):
         return None
     paths = PATHS.resolve_artifact_paths(directory, evidence)
     markdown = paths["markdown"]

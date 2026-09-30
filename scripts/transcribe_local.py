@@ -8,7 +8,9 @@ one-time Hugging Face model preparation action, not an inference API call.
 from __future__ import annotations
 
 import argparse
+import copy
 from contextlib import contextmanager
+from collections import Counter
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -237,6 +239,32 @@ def srt_time(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
+def machine_quality_flags(result: dict[str, Any], duration: float) -> list[str]:
+    """Flag obvious short-clip hallucination patterns without claiming silence."""
+    if not 0 < duration <= 120:
+        return []
+    segments = result.get("segments") or []
+    compact = lambda value: re.sub(r"[\s,.!?。，！？、]+", "", str(value or ""))
+    text = compact(result.get("text"))
+    phrases = [compact(segment.get("text")) for segment in segments if compact(segment.get("text"))]
+    flags = []
+    if duration >= 12 and len(text) <= 2:
+        flags.append("short_clip_has_only_one_or_two_machine_characters")
+    if len(phrases) >= 6:
+        phrase, count = Counter(phrases).most_common(1)[0]
+        if len(phrase) <= 20 and count >= 6 and count / len(phrases) >= 0.75:
+            flags.append("short_phrase_repeated_across_clip")
+    for segment in segments:
+        try:
+            segment_duration = float(segment["end"]) - float(segment["start"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if duration >= 15 and segment_duration >= max(12.0, duration * 0.6) and len(compact(segment.get("text"))) <= 20:
+            flags.append("long_sparse_machine_segment_in_short_clip")
+            break
+    return flags
+
+
 def validate_result(result: dict[str, Any], duration: float) -> dict[str, Any]:
     text = str(result.get("text") or "").strip()
     if not text:
@@ -271,6 +299,8 @@ def validate_result(result: dict[str, Any], duration: float) -> dict[str, Any]:
         warnings.append("long_gaps_may_be_silence_or_missed_speech")
     if low_confidence:
         warnings.append("low_confidence_or_repetitive_segments")
+    quality_flags = machine_quality_flags(result, duration)
+    warnings.extend("machine_quality_review:" + flag for flag in quality_flags)
     return {
         "nonempty": True, "segment_count": len(segments), "character_count": len(text),
         "full_text_matches_segments": True, "timestamps_valid": True,
@@ -279,9 +309,96 @@ def validate_result(result: dict[str, Any], duration: float) -> dict[str, Any]:
         "audio_duration_seconds": duration, "untranscribed_tail_seconds": round(tail, 3),
         "last_segment_end_fraction": round(min(1.0, max_end / duration), 6),
         "long_gaps": gaps, "low_confidence_segment_indices": low_confidence,
-        "warnings": warnings, "semantic_proofread": False, "human_audio_reviewed": False,
+        "warnings": warnings, "quality_flags": quality_flags,
+        "machine_quality_review_required": bool(quality_flags),
+        "semantic_proofread": False, "human_audio_reviewed": False,
         "completeness_scope": "nonempty, segment/text equality and timestamp bounds; speech accuracy requires review",
     }
+
+
+def repair_timestamp_from_window(result: dict[str, Any], window: dict[str, Any],
+                                 index: int, offset: float, duration: float) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Replace three faulty machine timestamps only when local words match exactly."""
+    segments = result.get("segments") or []
+    local = window.get("segments") or []
+    if index < 1 or index + 1 >= len(segments):
+        raise ValueError("timestamp repair needs preceding and following machine segments")
+    compact = lambda value: re.sub(r"\s+", "", str(value or ""))
+    expected = tuple(compact(segments[index + shift].get("text")) for shift in (-1, 0, 1))
+    if any(not text for text in expected):
+        raise ValueError("timestamp repair requires three nonempty original machine segments")
+    matches = [start for start in range(max(0, len(local) - 2))
+               if tuple(compact(local[start + shift].get("text")) for shift in range(3)) == expected]
+    if not matches:
+        raise ValueError("local word alignment did not reproduce the three original machine phrases")
+    nearest = min(matches, key=lambda start: abs(offset + float(local[start]["start"])
+                                                 - float(segments[index - 1]["start"])))
+    selected = local[nearest:nearest + 3]
+    starts = [offset + float(part["start"]) for part in selected]
+    ends = [offset + float(part["end"]) for part in selected]
+    original = segments[index - 1:index + 2]
+    replacements = (("end", ends[0], original[0]),
+                    ("start", starts[1], original[1]), ("end", ends[1], original[1]),
+                    ("start", starts[2], original[2]))
+    if any(abs(value - float(segment[key])) > 1.0 for key, value, segment in replacements):
+        raise ValueError("local word alignment differs from original timecodes by more than one second")
+    repaired = copy.deepcopy(result)
+    target = repaired["segments"]
+    target[index - 1]["end"] = ends[0]
+    target[index]["start"], target[index]["end"] = starts[1], ends[1]
+    target[index + 1]["start"] = starts[2]
+    validate_result(repaired, duration)
+    return repaired, {"segment_indices": [index - 1, index, index + 1],
+                      "original_segments": original, "local_window_segments": selected,
+                      "repaired_segments": target[index - 1:index + 2],
+                      "machine_words_edited": False, "human_audio_reviewed": False}
+
+
+def local_timing_retry(result: dict[str, Any], index: int, audio: Path,
+                       model: dict[str, Any], settings: dict[str, Any], duration: float,
+                       diagnostic: Path) -> dict[str, Any]:
+    segments = result.get("segments") or []
+    if index < 1 or index + 1 >= len(segments):
+        raise ValueError("local timing retry needs a three-segment neighborhood")
+    offset = max(0.0, float(segments[index - 1]["start"]) - 7.0)
+    end = min(duration, float(segments[index + 1]["end"]) + 7.0)
+    if not 5.0 <= end - offset <= 30.0:
+        raise ValueError("local timing retry window is outside safe length bounds")
+    with tempfile.TemporaryDirectory(prefix="asr-timing-") as temporary:
+        clip = Path(temporary) / "source-window.wav"
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-ss", str(offset),
+                        "-i", str(audio), "-t", str(end - offset), "-c:a", "pcm_s16le",
+                        "-y", str(clip)], capture_output=True, text=True, check=True)
+        import mlx_whisper
+        window = mlx_whisper.transcribe(str(clip), path_or_hf_repo=model["local_path"],
+                                        language=settings["language"], task="transcribe", verbose=None,
+                                        condition_on_previous_text=False, temperature=0.0,
+                                        initial_prompt=settings["initial_prompt"], word_timestamps=True)
+        validate_result(window, end - offset)
+        repaired, details = repair_timestamp_from_window(result, window, index, offset, duration)
+        atomic_json(diagnostic, {"status": "local_machine_timing_alignment",
+                                 "window_start_seconds": offset, "window_duration_seconds": end - offset,
+                                 "window_audio_sha256": sha256_file(clip),
+                                 "window_machine_result": window, **details})
+        return repaired
+
+
+def matching_preserved_invalid(root: Path, video_id: str, media_hash: str,
+                               key: str, audio_info: dict[str, Any]) -> tuple[Path | None, dict[str, Any] | None]:
+    """Reuse the exact preserved machine result when only its validation failed."""
+    for path in sorted((root / "_failed" / video_id).glob("*-raw-invalid.json"), reverse=True):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if (value.get("status") == "invalid_machine_result"
+                    and value.get("video_id") == video_id
+                    and value.get("source_media_sha256") == media_hash
+                    and model_key(value["model"], value["settings"]) == key
+                    and value.get("source_audio", {}).get("pcm_s16le_sha256") == audio_info["pcm_s16le_sha256"]
+                    and isinstance(value.get("raw_result"), dict)):
+                return path, value
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return None, None
 
 
 def render_srt(segments: list[dict[str, Any]]) -> str:
@@ -312,7 +429,7 @@ def resume_matches(directory: Path, media_hash: str, key: str) -> bool:
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     if evidence.get("source_media", {}).get("sha256") != media_hash or evidence.get("model_settings_key") != key:
         return False
-    if evidence.get("status") != "machine_draft_saved":
+    if evidence.get("status") not in ("machine_draft_saved", "machine_draft_requires_review"):
         return False
     files = _PATH_HELPER.resolve_artifact_paths(directory, evidence)
     for kind in ("markdown", "srt"):
@@ -347,9 +464,15 @@ def transcribe_job(job: dict[str, Any], root: Path, model: dict[str, Any], setti
     if resume_matches(directory, media_hash, key):
         previous = json.loads((directory / OUTPUT_NAMES["evidence"]).read_text(encoding="utf-8"))
         validation = previous["validation"]
-        return {"status": "skipped_verified", "video_id": video_id, "directory": str(directory),
+        flags = machine_quality_flags({"text": previous.get("raw_text"),
+                                       "segments": previous.get("segments")},
+                                      float((previous.get("source_audio") or {}).get("duration_seconds", 0)))
+        needs_review = bool(flags) or previous.get("status") == "machine_draft_requires_review"
+        return {"status": "skipped_requires_review" if needs_review else "skipped_verified",
+                "video_id": video_id, "directory": str(directory),
                 "character_count": validation["character_count"], "segment_count": validation["segment_count"],
-                "warnings": validation["warnings"], "original_completed_at": previous["completed_at"]}
+                "warnings": validation["warnings"], "quality_flags": flags,
+                "original_completed_at": previous["completed_at"]}
     if directory.exists():
         raise RuntimeError(f"existing ASR outputs do not match media/model/hash: {directory}; preserved unchanged, choose a new --output-dir")
     info = inspect_media(media)
@@ -369,39 +492,58 @@ def transcribe_job(job: dict[str, Any], root: Path, model: dict[str, Any], setti
                 task="transcribe", verbose=None, condition_on_previous_text=False,
                 temperature=0.0, initial_prompt=settings["initial_prompt"], word_timestamps=word_timestamps,
             )
-        result = decode(False)
+        preserved_path, preserved = matching_preserved_invalid(root, video_id, media_hash, key, audio_info)
+        result = preserved["raw_result"] if preserved else decode(False)
         retry_used = False
+        local_timing_repair_used = False
+        local_timing_diagnostic = None
         first_validation_error = None
         try:
             validation = validate_result(result, audio_info["duration_seconds"])
         except ValueError as exc:
             first_validation_error = str(exc)
-            failed_path = root / "_failed" / video_id / (started_at.replace(":", "-") + "-raw-invalid.json")
-            atomic_json(failed_path, {"status": "invalid_machine_result", "error": first_validation_error,
-                                      "video_id": video_id, "source_media_sha256": media_hash, "source_audio": audio_info,
-                                      "model": model, "settings": settings, "raw_result": result})
-            if "exceeds decoded audio duration" not in first_validation_error:
+            failed_path = preserved_path or root / "_failed" / video_id / (started_at.replace(":", "-") + "-raw-invalid.json")
+            if not preserved:
+                atomic_json(failed_path, {"status": "invalid_machine_result", "error": first_validation_error,
+                                          "video_id": video_id, "source_media_sha256": media_hash, "source_audio": audio_info,
+                                          "model": model, "settings": settings, "raw_result": result})
+            if "exceeds decoded audio duration" in first_validation_error:
+                # A single full alignment retry can resolve a last-window overshoot.
+                emit("local_timestamp_retry", video_id=video_id, diagnostic_path=str(failed_path))
+                result = decode(True)
+                validation = validate_result(result, audio_info["duration_seconds"])
+                retry_used = True
+                validation["warnings"].append("timestamp_alignment_retry_required_review_of_last_window")
+            elif first_validation_error.startswith("invalid/unordered timestamps at segment "):
+                index = int(first_validation_error.rsplit(" ", 1)[-1])
+                local_timing_diagnostic = failed_path.with_name(failed_path.stem + "-local-alignment.json")
+                result = local_timing_retry(result, index, audio, model, settings,
+                                            audio_info["duration_seconds"], local_timing_diagnostic)
+                validation = validate_result(result, audio_info["duration_seconds"])
+                local_timing_repair_used = True
+                validation["warnings"].append("three_segment_local_machine_timing_repair_requires_review")
+            else:
                 raise
-            # A single local alignment retry can resolve Whisper's last-window
-            # segment overshoot. Do not clip timestamps or discard raw words.
-            emit("local_timestamp_retry", video_id=video_id, diagnostic_path=str(failed_path))
-            result = decode(True)
-            validation = validate_result(result, audio_info["duration_seconds"])
-            retry_used = True
-            validation["warnings"].append("timestamp_alignment_retry_required_review_of_last_window")
         validation["local_word_alignment_retry_used"] = retry_used
+        validation["local_timing_repair_used"] = local_timing_repair_used
         stage = temporary_path / "outputs"
         stage.mkdir()
         elapsed = time.monotonic() - start
         evidence = {
-            "schema_version": SCHEMA_VERSION, "status": "machine_draft_saved",
+            "schema_version": SCHEMA_VERSION,
+            "status": "machine_draft_requires_review" if validation["quality_flags"] else "machine_draft_saved",
             "video_id": video_id, "source_url": job["source_url"], "title": job.get("title"), "author": job.get("author"),
             "started_at": started_at, "completed_at": utc_now(),
             "source_media": {"path": str(media), "sha256": media_hash, "bytes": media.stat().st_size, **info},
             "source_audio": audio_info, "model": model, "settings": settings, "model_settings_key": key,
-            "effective_decoding_settings": {**settings, "word_timestamps": retry_used},
-            "local_retry": {"count": 1 if retry_used else 0, "first_validation_error": first_validation_error,
-                            "policy": "at most one local word-alignment retry for timestamp overshoot; no timestamp clipping"},
+            "effective_decoding_settings": {**settings, "word_timestamps": retry_used,
+                                            "local_window_word_timestamps": local_timing_repair_used},
+            "local_retry": {"count": int(retry_used or local_timing_repair_used),
+                            "first_validation_error": first_validation_error,
+                            "policy": "one machine word-alignment retry, full for audio overshoot or local for inverted timestamps; original words retained",
+                            "local_timing_diagnostic_path": str(local_timing_diagnostic) if local_timing_diagnostic else None,
+                            "reused_preserved_invalid_machine_result": bool(preserved),
+                            "preserved_invalid_result_path": str(preserved_path) if preserved_path else None},
             "runtime": {"elapsed_seconds": round(elapsed, 3), "realtime_factor": round(elapsed / audio_info["duration_seconds"], 4),
                         "process_peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
                         "mlx_peak_memory_bytes_since_reset": mx.get_peak_memory(), "python": sys.version.split()[0]},
@@ -412,16 +554,22 @@ def transcribe_job(job: dict[str, Any], root: Path, model: dict[str, Any], setti
         }
         md = stage / OUTPUT_NAMES["markdown"]
         srt = stage / OUTPUT_NAMES["srt"]
-        md.write_text(render_markdown(job, result, evidence), encoding="utf-8")
+        markdown = render_markdown(job, result, evidence)
+        if validation["quality_flags"]:
+            markdown = markdown.replace("## 机器识别原文\n\n",
+                                        "- 质量状态：机器结果疑似重复或稀疏，需听音复核；当前不计入完整逐字稿。\n\n"
+                                        "## 机器识别原文\n\n", 1)
+        md.write_text(markdown, encoding="utf-8")
         srt.write_text(render_srt(result["segments"]), encoding="utf-8")
         for kind, path in (("markdown", md), ("srt", srt)):
             evidence["outputs"][kind] = {"path": str(directory / path.name), "sha256": sha256_file(path), "bytes": path.stat().st_size}
         atomic_json(stage / OUTPUT_NAMES["evidence"], evidence)
         # Directory commit is atomic; no half-written finished transcript is exposed.
         os.rename(stage, directory)
-    return {"status": "machine_draft_saved", "video_id": video_id, "directory": str(directory),
+    return {"status": evidence["status"], "video_id": video_id, "directory": str(directory),
             "character_count": validation["character_count"], "segment_count": validation["segment_count"],
-            "warnings": validation["warnings"], "elapsed_seconds": evidence["runtime"]["elapsed_seconds"]}
+            "warnings": validation["warnings"], "quality_flags": validation["quality_flags"],
+            "elapsed_seconds": evidence["runtime"]["elapsed_seconds"]}
 
 
 def doctor(model: str) -> dict[str, Any]:
@@ -521,7 +669,10 @@ def main() -> int:
                 emit("transcribing", video_id=video_id)
                 try:
                     outcome = transcribe_job(job, root, model, settings)
-                    finished += 1
+                    if outcome["status"] in ("machine_draft_requires_review", "skipped_requires_review"):
+                        failed += 1
+                    else:
+                        finished += 1
                     state["jobs"][video_id] = {**outcome, "completed_at": utc_now()}
                     emit("job_finished", **outcome)
                 except Exception as exc:

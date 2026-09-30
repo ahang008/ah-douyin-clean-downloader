@@ -37,8 +37,10 @@ class CreatorExportTests(unittest.TestCase):
         recorder = BROWSER.BrowserCatalog(SEC_UID, self.catalog_path)
         first = self.work(1)
         second = self.work(2)
+        foreign = self.work(4)
+        foreign["author"]["sec_uid"] = "MS4wLjForeignFixture"
         for cursor, payload in ((0, self.page([first], 90, 1)),
-                                (90, self.page([first, second, self.work(3, image=True)], 0, 0))):
+                                (90, self.page([first, second, self.work(3, image=True), foreign], 0, 0))):
             recorder.add(cursor, payload, json.dumps(payload).encode())
         self.catalog = recorder.save()
         self.ids = [row["video_id"] for row in self.catalog["videos"]]
@@ -105,6 +107,7 @@ class CreatorExportTests(unittest.TestCase):
         records = [json.loads(line) for line in self.outputs[1].read_text().splitlines()]
         self.assertEqual([row["video_id"] for row in records], self.ids)
         self.assertEqual(len(records), 2)  # The image work was not treated as a video.
+        self.assertEqual(self.catalog["excluded_foreign_author_count"], 1)
         for row in records:
             evidence = json.loads(Path(row["asr_evidence_path"]).read_text())
             self.assertEqual(row["machine_text"], evidence["raw_text"])
@@ -171,6 +174,22 @@ class CreatorExportTests(unittest.TestCase):
             self.run_export("--expected-count", "139")
         self.evidence().unlink()
         self.assertEqual(self.run_export(), 2)
+        self.assertTrue(all(not output.exists() for output in self.outputs))
+
+    def test_structurally_valid_but_sparse_short_clip_is_not_exported_as_complete(self):
+        evidence_path = self.evidence()
+        value = json.loads(evidence_path.read_text())
+        value["raw_text"] = "好"
+        value["segments"] = [{"start": 0.0, "end": 1.0, "text": "好"}]
+        value["source_audio"]["duration_seconds"] = 20.0
+        markdown = evidence_path.parent / EXPORT.OUTPUT_NAMES["markdown"]
+        srt = evidence_path.parent / EXPORT.OUTPUT_NAMES["srt"]
+        markdown.write_text("# Fixture\n\n## 机器识别原文\n\n好\n")
+        srt.write_text(ASR.render_srt(value["segments"]))
+        value["outputs"]["markdown"]["sha256"] = hashlib.sha256(markdown.read_bytes()).hexdigest()
+        value["outputs"]["srt"]["sha256"] = hashlib.sha256(srt.read_bytes()).hexdigest()
+        evidence_path.write_text(json.dumps(value, ensure_ascii=False))
+        self.assertEqual(self.run_export("--check"), 2)
         self.assertTrue(all(not output.exists() for output in self.outputs))
 
     def test_export_cannot_overwrite_original_media(self):
