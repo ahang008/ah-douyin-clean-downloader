@@ -110,6 +110,15 @@ class BrowserDispatchFixtures(unittest.TestCase):
         self.assertEqual(command[command.index("--catalog") + 1], str(self.catalog_path))
         self.assertEqual(command[command.index("--limit") + 1], "1")
 
+    def test_metadata_stage_accepts_older_browser_catalog_name(self):
+        self.catalog(complete=True)
+        legacy = self.catalog_path.with_name("browser-catalog.json")
+        self.catalog_path.rename(legacy)
+        self.assertEqual(self.execute(["--stage", "metadata"]), 0)
+        self.assertEqual([stage for stage, _ in self.calls], ["metadata"])
+        command = self.calls[0][1]
+        self.assertEqual(command[command.index("--catalog") + 1], str(legacy))
+
     def test_metadata_stage_generates_reading_copies_when_records_exist(self):
         self.catalog(complete=True)
         metadata = self.root / "catalog/作品标题标签封面.jsonl"

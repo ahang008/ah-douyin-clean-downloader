@@ -131,6 +131,8 @@ python3 "$SKILL_DIR/scripts/collect_cover_metadata.py" \
 
 需要代理时加 `--proxy URL`；`--limit N` 只处理前 N 条，JSONL 和索引仍列全目录，未处理项为 `not_attempted`。样本退出成功仅代表选中条目有终态，不得报告为全量。脚本复用已缓存的封面 JPEG 和完成记录；成功时输出 `catalog/作品标题标签封面.jsonl`、`catalog/cover-metadata-report.json`、`covers/<视频ID>.jpg` 与 `标题标签封面索引.md`。这些是作品静帧与文字数据，不是视频。
 
+较早的资料库若只保存 `catalog/browser-catalog.json`，`--stage metadata` 会自动读取它；直接运行采集脚本时，把示例中的 `--catalog` 路径改为该文件。`--stage status` 同样能读取这个旧文件名。
+
 `published_caption` 保留完整发布文案；`title_candidate` 是第一个井号标签之前的文字，文案从标签开始时为 `null`，不能凭文件名或口播补造标题。`hashtags` 按首次出现顺序保留 `#` 并去重；没有标签是空数组。封面只取作品 `video.cover` 的选定图片，不拿 `origin_cover` 或视频开头画面冒充封面。JSONL 同时保存 `official_url`、`caption_source`、`catalog_sha256`、`cover_source`、`cover_captured_at_utc`、`cover_image_path`、`cover_text_raw`、`ocr_lines`、`cover_status` 和 `human_verified`；本地 OCR 的 `human_verified=false`，它只是待核文本。
 
 `cover_status=ok` 表示 OCR 找到文字，仍非逐字人工验收；`ocr_low_confidence` 应显式标为待核；`ocr_empty` 表示封面已取得但机器未读出文字，不能写成“确认无字”；获取或识别失败应保留具体失败状态、空文字和可用的图像路径以便续跑，不把它混入“无文字”。索引中的文字与状态必须成对呈现；重要标题据原封面核对后才可标人工确认。批量报告分别给出目录覆盖、文案字段覆盖、封面取得数、OCR 各状态数，不能因为正文转写成功就声称封面也全量核对。
