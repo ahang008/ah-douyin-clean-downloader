@@ -40,6 +40,27 @@ def read_json(path):
     return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
 
 
+def read_cover_metadata(root, catalog_sha256):
+    """Use only records derived from the exact validated catalog snapshot."""
+    path = root / "catalog/作品标题标签封面.jsonl"
+    if not path.is_file():
+        return {}
+    result = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict) or row.get("catalog_sha256") != catalog_sha256:
+            continue
+        video_id = str(row.get("video_id") or "")
+        if re.fullmatch(r"\d{16,22}", video_id):
+            result[video_id] = row
+    return result
+
+
 def safe_author_name(value):
     """A public nickname may never create directories or reserved filenames."""
     value = unicodedata.normalize("NFKC", str(value or ""))
@@ -162,6 +183,8 @@ def readiness(args, videos):
 def collect_existing_text(args, catalog, videos, manifest):
     records, bodies = [], []
     helper = load_local_helper("transcribe_local.py", "corpus_asr_validation")
+    caption_helper = load_local_helper("collect_cover_metadata.py", "corpus_cover_captions")
+    cover_metadata = read_cover_metadata(args.root, args.catalog_sha256)
     for number, row in enumerate(videos, 1):
         video_id = row["video_id"]
         directory = args.root / "local-transcripts" / video_id
@@ -222,6 +245,23 @@ def collect_existing_text(args, catalog, videos, manifest):
             "source_media_sha256": recorded_sha,
             "asr_warnings": validation.get("warnings", []),
         }
+        cover = cover_metadata.get(video_id, {})
+        if cover and cover.get("published_caption") != (row.get("title") or ""):
+            cover = {}
+        _, fallback_title, fallback_tags = caption_helper.parse_caption(row.get("title"))
+        image_path = cover.get("cover_image_path")
+        if image_path:
+            candidate = Path(image_path).expanduser().resolve()
+            image_path = str(candidate) if candidate.is_file() and (args.root / "covers").resolve() in candidate.parents else None
+        record.update({
+            "published_caption": row.get("title") or "",
+            "title_candidate": cover.get("title_candidate") if cover else fallback_title,
+            "hashtags": cover.get("hashtags") if isinstance(cover.get("hashtags"), list) else fallback_tags,
+            "cover_text_raw": cover.get("cover_text_raw") or "",
+            "cover_status": cover.get("cover_status") or "not_collected",
+            "cover_image_path": image_path,
+            "cover_human_verified": False,
+        })
         if "statistics" in row:
             record.update({key: row.get(key) for key in
                            ("statistics", "statistics_availability", "statistics_captured_at")})
@@ -254,6 +294,22 @@ def render_markdown(records, bodies, catalog_sha256):
                          " · 藏 " + METRICS.metric_text(row, "collect_count") +
                          " · 转 " + METRICS.metric_text(row, "share_count") +
                          " · 采集时间 " + str(row.get("statistics_captured_at") or "未获取") + "\n\n")
+        opening = str(row.get("title_candidate") or "未见独立文字开头").replace("\n", " ").replace("\r", " ")
+        tags = row.get("hashtags") or []
+        lines.append("发布文案开头（标题候选）：" + opening + "\n\n")
+        lines.append("井号标签：" + (" ".join(str(tag) for tag in tags) if tags else "未见井号标签") + "\n\n")
+        status = row.get("cover_status") or "not_collected"
+        cover_text = str(row.get("cover_text_raw") or "").replace("\r", "")
+        if cover_text:
+            lines.append("封面文字（机器识别，待人工核对；" + status + "）：\n\n")
+            lines.extend("- " + line.strip() + "\n" for line in cover_text.splitlines() if line.strip())
+            lines.append("\n")
+        elif status == "ocr_empty":
+            lines.append("封面文字：机器未识别到明显文字，待核对原封面。\n\n")
+        else:
+            lines.append("封面文字：未取得，状态 " + status + "。\n\n")
+        if row.get("cover_image_path"):
+            lines.append(f"[查看作品选定封面](<{row['cover_image_path']}>)\n\n")
         lines.append(body.rstrip("\n") + "\n")
     return "".join(lines)
 
