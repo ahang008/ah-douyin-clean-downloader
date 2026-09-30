@@ -249,10 +249,8 @@ def fetch_one(video_id: str, image_dir: Path, proxy: str | None) -> dict:
         raise ValueError("cover destination must not be a symlink")
     if valid_jpeg(destination):
         cached_at = datetime.fromtimestamp(destination.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
-        source = "official_aweme_feed.video.cover"
-        marker = destination.with_suffix(".source.json")
-        if marker.exists() or marker.is_symlink():
-            source = WEB_DETAIL_SOURCE if verified_web_detail_marker(video_id, destination) else "cached_cover_source_unverified"
+        # Existing JPEG bytes alone cannot prove whether the feed or web detail supplied them.
+        source = WEB_DETAIL_SOURCE if verified_web_detail_marker(video_id, destination) else "cached_cover_source_unverified"
         return record(video_id, destination, "ocr_pending", captured_at=cached_at, source=source)
     destination.unlink(missing_ok=True)
 

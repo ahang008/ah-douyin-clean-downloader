@@ -142,6 +142,8 @@ python3 "$SKILL_DIR/scripts/collect_cover_metadata.py" \
 
 `cover_status=ok` 表示 OCR 找到文字，仍非逐字人工验收；`ocr_low_confidence` 应显式标为待核；`ocr_empty` 表示封面已取得但机器未读出文字，不能写成“确认无字”；获取或识别失败应保留具体失败状态、空文字和可用的图像路径以便续跑，不把它混入“无文字”。索引中的文字与状态必须成对呈现；重要标题据原封面核对后才可标人工确认。批量报告分别给出目录覆盖、文案字段覆盖、封面取得数、OCR 各状态数，不能因为正文转写成功就声称封面也全量核对。
 
+缓存 JPEG 本身不能证明来自旧 feed 还是官方网页详情。缺少可信来源标记或标记中的图片 SHA-256 与现有 JPEG 不一致时，重做本地 OCR 并将 `cover_source` 记为 `cached_cover_source_unverified`；不得自动写成 feed 来源，需重新获取官方图片或人工核查来源。
+
 已有已校验的机器 Markdown 时，`all`、`collect`、`metadata` 和 `transcribe` 阶段会在元数据可用后生成逐条 `annotated-transcripts/` 阅读副本：文件开头标注标题候选、标签、封面原图链接、OCR 文字与状态，后面逐字节接原机器稿。原 `local-transcripts/` 文件和 SRT 不改；没有机器稿时只报告缺失，不伪造逐字稿。生成器记录自己的输出校验值，重跑会跳过未变化的副本，遇到人工改过的副本则拒绝覆盖。仅需离线重建阅读副本时可运行：
 
 ```bash
