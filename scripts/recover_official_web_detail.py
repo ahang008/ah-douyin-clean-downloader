@@ -106,11 +106,22 @@ def author_matches(item: dict, catalog: dict, row: dict) -> bool:
     return bool(detail_sec_uid) or (bool(detail_uid) and bool(row_uid))
 
 
+def safe_library_subdirectory(root: Path, name: str) -> Path:
+    root = root.resolve()
+    folder = root / name
+    if folder.is_symlink():
+        raise RuntimeError("unsafe_library_subdirectory_symlink:" + name)
+    folder.mkdir(parents=True, exist_ok=True)
+    if not folder.is_dir() or folder.resolve().parent != root:
+        raise RuntimeError("unsafe_library_subdirectory:" + name)
+    return folder
+
+
 def recover_media(root: Path, item: dict, video_id: str, author: str,
                   proxy: str | None) -> dict:
-    media_root = root / "media"
-    folder = media_root / backend.safe_component(author, "未知作者")
-    folder.mkdir(parents=True, exist_ok=True)
+    media_root = safe_library_subdirectory(root, "media")
+    safe_author = backend.safe_component(author, "未知作者", limit=64)
+    folder = backend.ensure_author_directory(media_root, safe_author)
     destination = folder / f"抖音网页播放源-{video_id}.mp4"
     if destination.is_file():
         probe = batch.verify_file(destination, media_root, backend)
@@ -142,8 +153,9 @@ def recover_cover(root: Path, item: dict, video_id: str, proxy: str | None) -> d
     candidates = [url for url in (cover.get("url_list") or []) if covers.official_cover_url(url)]
     if not candidates:
         return {"cover_saved": False, "cover_reason": "official_cover_url_missing_or_untrusted"}
-    destination = root / "covers" / (video_id + ".jpg")
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination = safe_library_subdirectory(root, "covers") / (video_id + ".jpg")
+    if destination.is_symlink():
+        raise RuntimeError("unsafe_cover_destination_symlink")
     if covers.valid_jpeg(destination):
         return {"cover_saved": True, "cover_image_path": str(destination.resolve()),
                 "cover_source": "existing_cached_cover"}

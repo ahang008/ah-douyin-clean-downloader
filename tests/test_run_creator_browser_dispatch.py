@@ -42,6 +42,18 @@ class BrowserDispatchFixtures(unittest.TestCase):
         self.calls.append((stage, list(command)))
         if stage == "collect":
             self.catalog(complete=True)
+        if stage == "export":
+            markdown = root / "synthetic-corpus.md"
+            jsonl = root / "catalog" / "synthetic-corpus.jsonl"
+            markdown.write_text("synthetic machine corpus", encoding="utf-8")
+            jsonl.write_text('{"video_id":"7600000000000000001"}\n', encoding="utf-8")
+            (root / "corpus-export.json").write_text(json.dumps({
+                "event": "corpus_exported", "entries": 1,
+                "markdown": str(markdown), "jsonl": str(jsonl),
+                "markdown_sha256": hashlib.sha256(markdown.read_bytes()).hexdigest(),
+                "jsonl_sha256": hashlib.sha256(jsonl.read_bytes()).hexdigest(),
+                "source_catalog_sha256": hashlib.sha256(catalog_path.read_bytes()).hexdigest(),
+            }))
         return 0
 
     def execute(self, arguments):

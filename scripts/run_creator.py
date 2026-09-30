@@ -71,6 +71,23 @@ def load_json(path: Path) -> dict:
         return {}
 
 
+def exported_output_matches(path_value: object, digest: object) -> bool:
+    if (not isinstance(path_value, str) or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+        return False
+    path = Path(path_value)
+    if path.is_symlink() or not path.is_file():
+        return False
+    try:
+        content_hash = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                content_hash.update(chunk)
+        return content_hash.hexdigest() == digest
+    except OSError:
+        return False
+
+
 def rows(catalog: dict) -> list[dict]:
     value = catalog.get("videos", [])
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
@@ -228,12 +245,13 @@ def snapshot(root: Path, catalog_path: Path, limit: int = 0) -> dict:
         "runtime": {"online_llm_calls": 0, "computer_use_calls": 0, "paid_asr_calls": 0},
     }
     previous_export = load_json(root / "corpus-export.json")
-    export_paths = [previous_export.get("markdown"), previous_export.get("jsonl")]
     summary["corpus_exported"] = bool(
         summary["all_public_videos_transcribed"]
+        and previous_export.get("event") == "corpus_exported"
         and previous_export.get("entries") == len(ids)
         and previous_export.get("source_catalog_sha256") == hashlib.sha256(catalog_path.read_bytes()).hexdigest()
-        and all(isinstance(path, str) and Path(path).is_file() for path in export_paths)
+        and exported_output_matches(previous_export.get("markdown"), previous_export.get("markdown_sha256"))
+        and exported_output_matches(previous_export.get("jsonl"), previous_export.get("jsonl_sha256"))
     )
     if summary["corpus_exported"]:
         summary["corpus_export"] = previous_export
@@ -556,7 +574,10 @@ def main() -> int:
                                   "--root", str(root), "--catalog", str(catalog_path)]
             stages["export"] = run_logged(commands["export"], logs / "export.log", root, catalog_path, 0, "export")
         if "export" in stages:
-            summary["corpus_exported"] = stages["export"] == 0
+            summary = snapshot(root, catalog_path, args.limit)
+            if naming_report is not None:
+                summary["artifact_naming"] = naming_report
+            summary["corpus_exported"] = stages["export"] == 0 and summary["corpus_exported"]
         if summary["corpus_exported"]:
             summary["corpus_export"] = load_json(root / "corpus-export.json")
         atomic_json(root / "pipeline-summary.json", summary)

@@ -58,6 +58,24 @@ class LocalTimingRepairTests(unittest.TestCase):
                                {"start": 2.0, "end": 4.0, "text": "接着讲第二步"}]}
         self.assertFalse(MODULE.validate_result(normal, 5.0)["machine_quality_review_required"])
 
+    def test_single_long_repeated_machine_segment_requires_audio_review(self):
+        repeated = "我看你了" * 20
+        result = {"text": repeated,
+                  "segments": [{"start": 0.0, "end": 20.0, "text": repeated}]}
+        validation = MODULE.validate_result(result, 20.0)
+        self.assertTrue(validation["machine_quality_review_required"])
+        self.assertIn("short_phrase_repeated_within_machine_text", validation["quality_flags"])
+        normal = {"text": "今天先看问题出在哪里再一步一步把设置调整好",
+                  "segments": [{"start": 0.0, "end": 20.0,
+                                "text": "今天先看问题出在哪里再一步一步把设置调整好"}]}
+        self.assertFalse(MODULE.validate_result(normal, 20.0)["machine_quality_review_required"])
+
+    def test_tiny_opening_machine_text_with_long_untranscribed_tail_requires_review(self):
+        result = {"text": "你好啊", "segments": [{"start": 0.0, "end": 1.0, "text": "你好啊"}]}
+        validation = MODULE.validate_result(result, 20.0)
+        self.assertIn("very_sparse_machine_text_at_clip_start", validation["quality_flags"])
+        self.assertTrue(validation["machine_quality_review_required"])
+
 
 if __name__ == "__main__":
     unittest.main()

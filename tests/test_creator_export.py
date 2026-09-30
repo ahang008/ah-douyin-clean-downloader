@@ -114,6 +114,25 @@ class CreatorExportTests(unittest.TestCase):
             self.assertEqual(row["source_catalog_sha256"], hashlib.sha256(self.catalog_path.read_bytes()).hexdigest())
         self.assertEqual(before, {path: path.read_bytes() for path in self.inputs})
 
+    def test_export_rejects_same_work_id_under_target_and_foreign_authors_in_either_page_order(self):
+        target = self.work(1)
+        foreign = self.work(1)
+        foreign["author"]["sec_uid"] = "MS4wLjForeignFixture"
+        for foreign_first in (False, True):
+            with self.subTest(foreign_first=foreign_first):
+                path = self.root / "catalog" / f"identity-conflict-{foreign_first}.json"
+                recorder = BROWSER.BrowserCatalog(SEC_UID, path)
+                first, second = (foreign, target) if foreign_first else (target, foreign)
+                for cursor, page in ((0, self.page([first], 90, 1)),
+                                     (90, self.page([second], 0, 0))):
+                    recorder.add(cursor, page, json.dumps(page).encode())
+                forged = recorder.save()
+                self.assertFalse(forged["catalog_complete"])
+                forged["catalog_complete"] = True
+                forged["errors"] = []
+                with self.assertRaisesRegex(ValueError, "both the requested and a foreign author"):
+                    EXPORT.validated_pagination(forged, path)
+
     def test_check_hashes_all_inputs_and_writes_no_exports(self):
         self.assertEqual(self.run_export("--check"), 0)
         self.assertTrue(all(not path.exists() for path in self.outputs))
