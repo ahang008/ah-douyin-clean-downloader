@@ -144,6 +144,10 @@ class CatalogAndCoverTests(unittest.TestCase):
         with patch.object(MODULE, "valid_jpeg", return_value=True):
             stale = MODULE.fetch_one(IDS[0], self.root, None)
         self.assertEqual(stale["cover_source"], "cached_cover_source_unverified")
+        marker.unlink()
+        with patch.object(MODULE, "valid_jpeg", return_value=True):
+            missing_marker = MODULE.fetch_one(IDS[0], self.root, None)
+        self.assertEqual(missing_marker["cover_source"], "cached_cover_source_unverified")
 
 
 class OutputTests(unittest.TestCase):
@@ -224,6 +228,34 @@ class OutputTests(unittest.TestCase):
         rows = [json.loads(line) for line in (self.root / "catalog" / MODULE.RECORD_NAME).read_text().splitlines()]
         self.assertEqual(rows[0]["cover_source"], "cached_cover_source_unverified")
         self.assertEqual(rows[0]["cover_status"], "ocr_empty")
+
+    def test_missing_web_detail_marker_never_relabels_cached_image_as_feed(self):
+        works, _, _ = MODULE.load_catalog(self.catalog_path)
+        cover = self.root / "covers" / (IDS[0] + ".jpg")
+        cover.parent.mkdir()
+        cover.write_bytes(b"\xff\xd8\xff" + b"cached web detail fixture" * 8)
+        old = MODULE.record(IDS[0], cover, "ok", [{"text": "旧封面", "confidence": 0.9}],
+                            source=MODULE.WEB_DETAIL_SOURCE)
+        MODULE.save_records(self.root / "catalog" / MODULE.RECORD_NAME, works, {IDS[0]: old})
+
+        def synthetic_ocr(_works, images, _script, records, _output):
+            self.assertIn(IDS[0], images)
+            previous = records[IDS[0]]
+            records[IDS[0]] = MODULE.record(IDS[0], images[IDS[0]], "ok",
+                                            [{"text": "重新识字", "confidence": 0.9}],
+                                            source=previous["cover_source"])
+
+        with patch.object(MODULE.shutil, "which", return_value="/bin/tool"), \
+             patch.object(MODULE, "valid_jpeg", return_value=True), \
+             patch.object(MODULE, "curl_to", side_effect=AssertionError("cached image must not fetch")), \
+             patch.object(MODULE, "run_ocr", side_effect=synthetic_ocr), \
+             patch.object(MODULE.time, "sleep", return_value=None), \
+             patch("sys.argv", [str(SCRIPT), "--catalog", str(self.catalog_path),
+                                "--root", str(self.root), "--limit", "1"]):
+            self.assertEqual(MODULE.main(), 0)
+        rows = [json.loads(line) for line in (self.root / "catalog" / MODULE.RECORD_NAME).read_text().splitlines()]
+        self.assertEqual(rows[0]["cover_status"], "ok")
+        self.assertEqual(rows[0]["cover_source"], "cached_cover_source_unverified")
 
     def test_metadata_stage_rejects_covers_directory_symlink(self):
         outside = self.root / "outside"
