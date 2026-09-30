@@ -42,6 +42,18 @@ class BrowserDispatchFixtures(unittest.TestCase):
         self.calls.append((stage, list(command)))
         if stage == "collect":
             self.catalog(complete=True)
+        if stage == "export":
+            markdown = root / "synthetic-corpus.md"
+            jsonl = root / "catalog" / "synthetic-corpus.jsonl"
+            markdown.write_text("synthetic machine corpus", encoding="utf-8")
+            jsonl.write_text('{"video_id":"7600000000000000001"}\n', encoding="utf-8")
+            (root / "corpus-export.json").write_text(json.dumps({
+                "event": "corpus_exported", "entries": 1,
+                "markdown": str(markdown), "jsonl": str(jsonl),
+                "markdown_sha256": hashlib.sha256(markdown.read_bytes()).hexdigest(),
+                "jsonl_sha256": hashlib.sha256(jsonl.read_bytes()).hexdigest(),
+                "source_catalog_sha256": hashlib.sha256(catalog_path.read_bytes()).hexdigest(),
+            }))
         return 0
 
     def execute(self, arguments):
@@ -100,6 +112,54 @@ class BrowserDispatchFixtures(unittest.TestCase):
         code = self.execute([PROFILE, "--stage", "download", "--browser-session"])
         self.assertEqual(code, 0)
         self.assertEqual([stage for stage, _ in self.calls], ["download"])
+
+    def test_app_feed_identity_miss_runs_official_web_recovery_then_adopts(self):
+        self.catalog(complete=True)
+        original = self.fake_run_logged
+        count = {"download": 0}
+
+        def recover(command, log, root, catalog_path, limit, stage):
+            result = original(command, log, root, catalog_path, limit, stage)
+            if stage == "download":
+                count["download"] += 1
+                manifest = root / "media/download-manifest.json"
+                manifest.parent.mkdir(exist_ok=True)
+                if count["download"] == 1:
+                    manifest.write_text(json.dumps({"videos": {"7600000000000000001": {
+                        "status": "failed", "last_error": "metadata_id_not_returned"}}}))
+                    return 1
+                manifest.write_text(json.dumps({"videos": {"7600000000000000001": {
+                    "status": "verified"}}}))
+            return result
+
+        self.fake_run_logged = recover
+        self.assertEqual(self.execute(["--stage", "download"]), 0)
+        self.assertEqual([stage for stage, _ in self.calls],
+                         ["download", "web_detail_recovery", "download"])
+        self.assertEqual(Path(self.calls[1][1][1]).name, "recover_official_web_detail.py")
+        self.assertEqual(self.calls[1][1][-1], "7600000000000000001")
+
+    def test_cover_identity_miss_runs_web_detail_and_retries_ocr(self):
+        self.catalog(complete=True)
+        original = self.fake_run_logged
+        count = {"metadata": 0}
+
+        def recover(command, log, root, catalog_path, limit, stage):
+            result = original(command, log, root, catalog_path, limit, stage)
+            if stage == "metadata":
+                count["metadata"] += 1
+                output = root / "catalog/作品标题标签封面.jsonl"
+                output.write_text(json.dumps({"video_id": "7600000000000000001",
+                                              "cover_status": "metadata_id_not_returned" if count["metadata"] == 1
+                                              else "ocr_empty"}) + "\n")
+                return 1 if count["metadata"] == 1 else 0
+            return result
+
+        self.fake_run_logged = recover
+        self.assertEqual(self.execute(["--stage", "metadata"]), 0)
+        self.assertEqual([stage for stage, _ in self.calls],
+                         ["metadata", "web_detail_cover_recovery", "metadata", "annotate"])
+        self.assertIn("--cover-only", self.calls[1][1])
 
     def test_metadata_stage_needs_only_saved_catalog_and_no_media_process(self):
         self.catalog(complete=True)

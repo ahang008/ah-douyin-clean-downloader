@@ -114,7 +114,38 @@ def normalize_work(row, sec_uid, captured_at=None):
     return work
 
 
-def public_projection(payload, works):
+def excluded_foreign_work(row, sec_uid):
+    """Keep only public identity fields for a work attributed to another author."""
+    if not isinstance(row, dict) or not isinstance(row.get("author"), dict):
+        raise CaptureValidationError("foreign_author_wrong_shape")
+    author = row["author"]
+    other_uid = author.get("sec_uid")
+    video_id = str(row.get("aweme_id") or "")
+    if (not isinstance(other_uid, str) or not re.fullmatch(r"MS4wLj[A-Za-z0-9_-]+", other_uid)
+            or other_uid == sec_uid or not re.fullmatch(r"\d{16,22}", video_id)):
+        raise CaptureValidationError("foreign_author_identity_invalid")
+    is_video = row.get("aweme_type", 0) in (0, 4) and not row.get("images")
+    return {"video_id": video_id,
+            "canonical_url": "https://www.douyin.com/" + ("video/" if is_video else "note/") + video_id,
+            "title": str(row.get("desc") or "")[:1000], "is_video": is_video,
+            "author": {"uid": author.get("uid"), "sec_uid": other_uid,
+                       "nickname": author.get("nickname")},
+            "exclusion_reason": "official_page_row_author_differs_from_requested_creator"}
+
+
+def split_author_works(rows, sec_uid, captured_at=None):
+    works, excluded = [], []
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("author"), dict):
+            raise CaptureValidationError("author_wrong_shape")
+        if row["author"].get("sec_uid") == sec_uid:
+            works.append(normalize_work(row, sec_uid, captured_at=captured_at))
+        else:
+            excluded.append(excluded_foreign_work(row, sec_uid))
+    return works, excluded
+
+
+def public_projection(payload, works, excluded=()):
     """Persist only public target-work metadata, never headers or request tokens."""
     module = payload.get("not_login_module") or {}
     rows = []
@@ -129,6 +160,7 @@ def public_projection(payload, works):
         rows.append(row)
     return {"status_code": payload["status_code"], "has_more": payload["has_more"],
             "max_cursor": payload["max_cursor"], "aweme_list": rows,
+            "excluded_foreign_author_works": list(excluded),
             "not_login_module": {"guide_login_tip_exist": bool(module.get("guide_login_tip_exist"))}}
 
 
@@ -161,8 +193,8 @@ class BrowserCatalog:
             raise CaptureValidationError("cursor_invalid")
         returned = int(returned)
         captured_at = now()
-        works = [normalize_work(row, self.sec_uid, captured_at=captured_at) for row in payload["aweme_list"]]
-        if requested_cursor == 0 and not works:
+        works, excluded = split_author_works(payload["aweme_list"], self.sec_uid, captured_at=captured_at)
+        if requested_cursor == 0 and not works and not excluded:
             raise CaptureValidationError("empty_first_page")
         if payload.get("not_login_module") is not None and not isinstance(payload.get("not_login_module"), dict):
             raise CaptureValidationError("login_module_wrong_shape")
@@ -176,19 +208,21 @@ class BrowserCatalog:
             self.pages = {}
             self.errors = []
             old = None
-        semantic = ([work["video_id"] for work in works], returned, bool(payload["has_more"]), filtered)
+        semantic = ([work["video_id"] for work in works], [work["video_id"] for work in excluded],
+                    returned, bool(payload["has_more"]), filtered)
         if old:
             if old["semantic"] == semantic:
                 return False
             raise CaptureValidationError("cursor_conflict")
         if payload["has_more"] and returned == requested_cursor:
             raise CaptureValidationError("cursor_did_not_advance")
-        projected = public_projection(payload, works)
+        projected = public_projection(payload, works, excluded)
         page_file = self.pages_dir / (str(requested_cursor) + ".json")
         atomic_json(page_file, projected)
         self.pages[requested_cursor] = {
             "requested_cursor": requested_cursor, "returned_cursor": returned,
-            "has_more": bool(payload["has_more"]), "works": works, "filtered": filtered,
+            "has_more": bool(payload["has_more"]), "works": works, "excluded": excluded,
+            "filtered": filtered,
             "semantic": semantic, "captured_at": captured_at, "file": str(page_file),
             "payload_sha256": hashlib.sha256(raw).hexdigest(),
             "saved_file_sha256": hashlib.sha256(page_file.read_bytes()).hexdigest(),
@@ -199,7 +233,7 @@ class BrowserCatalog:
         return True
 
     def catalog(self):
-        cursor, seen_cursors, chain, seen = 0, set(), [], {}
+        cursor, seen_cursors, chain, seen, foreign = 0, set(), [], {}, {}
         errors = list(self.errors)
         exhausted = False
         while cursor in self.pages:
@@ -213,10 +247,13 @@ class BrowserCatalog:
                 if work["video_id"] not in seen:
                     seen[work["video_id"]] = {**work, "catalog_page": len(chain) + 1}
                     fresh += 1
+            for work in page["excluded"]:
+                foreign.setdefault(work["video_id"], {**work, "catalog_page": len(chain) + 1})
             chain.append({key: page[key] for key in ("requested_cursor", "returned_cursor", "has_more",
                          "captured_at", "file", "payload_sha256", "saved_file_sha256")})
             chain[-1].update({"page": len(chain), "status_code": 0,
                             "returned_works": len(page["works"]), "new_unique_works": fresh,
+                            "excluded_foreign_author_works": len(page["excluded"]),
                             "all_authors_match_sec_uid": True,
                             "not_login_module": {"guide_login_tip_exist": page["filtered"]},
                             "endpoint": POST_URL, "saved_payload_kind": "public_metadata_projection"})
@@ -224,10 +261,12 @@ class BrowserCatalog:
             if not page["has_more"]:
                 exhausted = True
                 break
-            if fresh == 0:
+            if fresh == 0 and not page["excluded"]:
                 errors.append("Nonterminal page contains no new unique works")
                 break
         filtered = any(page["not_login_module"]["guide_login_tip_exist"] for page in chain)
+        if set(seen).intersection(foreign):
+            errors.append("Work ID appears under both the requested and a foreign author")
         videos = [work for work in seen.values() if work["is_video"]]
         others = [work for work in seen.values() if not work["is_video"]]
         complete = bool(videos) and exhausted and not filtered and not errors
@@ -240,6 +279,8 @@ class BrowserCatalog:
                 "catalog_visibility": "login_filtered" if filtered else "public",
                 "videos": videos, "non_video_works": others, "video_count": len(videos),
                 "non_video_work_count": len(others), "work_count": len(seen),
+                "excluded_foreign_author_works": list(foreign.values()),
+                "excluded_foreign_author_count": len(foreign),
                 "page_evidence": chain, "has_more": not exhausted, "cursor": cursor,
                 "unlinked_response_count": len(self.pages) - len(chain), "errors": errors,
                 "cookie_exported": False, "request_headers_saved": False, "signed_urls_saved": False}

@@ -42,6 +42,7 @@ def local_helper(filename: str, name: str):
 PATHS = local_helper("artifact_paths.py", "creator_artifact_paths")
 METRICS = local_helper("work_metrics.py", "creator_public_metrics")
 NAMING = local_helper("name_artifacts.py", "creator_artifact_naming")
+ASR = local_helper("transcribe_local.py", "creator_asr_quality")
 
 
 def now() -> str:
@@ -70,9 +71,50 @@ def load_json(path: Path) -> dict:
         return {}
 
 
+def exported_output_matches(path_value: object, digest: object) -> bool:
+    if (not isinstance(path_value, str) or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+        return False
+    path = Path(path_value)
+    if path.is_symlink() or not path.is_file():
+        return False
+    try:
+        content_hash = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                content_hash.update(chunk)
+        return content_hash.hexdigest() == digest
+    except OSError:
+        return False
+
+
 def rows(catalog: dict) -> list[dict]:
     value = catalog.get("videos", [])
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def web_detail_download_gaps(manifest: Path, selected_ids: list[str]) -> list[str]:
+    entries = load_json(manifest).get("videos", {})
+    return [video_id for video_id in selected_ids
+            if isinstance(entries.get(video_id), dict) and entries[video_id].get("status") == "failed"
+            and ("metadata_id_not_returned" in str(entries[video_id].get("last_error") or "")
+                 or "接口没有返回对应作品" in str(entries[video_id].get("last_error") or ""))]
+
+
+def web_detail_cover_gaps(path: Path, selected_ids: list[str]) -> list[str]:
+    if not path.is_file():
+        return []
+    selected = set(selected_ids)
+    values = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict) and row.get("video_id") in selected:
+                values[row["video_id"]] = row.get("cover_status")
+    return [video_id for video_id in selected_ids if values.get(video_id) == "metadata_id_not_returned"]
 
 
 def cover_records(root: Path, catalog_path: Path) -> dict[str, dict]:
@@ -133,6 +175,19 @@ def transcript_present(directory: Path) -> bool:
         return False
 
 
+def transcript_quality_flags(directory: Path) -> list[str]:
+    try:
+        evidence = load_json(transcript_files(directory)["evidence"])
+        duration = float((evidence.get("source_audio") or {}).get("duration_seconds", 0))
+        flags = ASR.machine_quality_flags({"text": evidence.get("raw_text"),
+                                           "segments": evidence.get("segments")}, duration)
+        if evidence.get("status") == "machine_draft_requires_review" and not flags:
+            flags = ["prior_machine_result_requires_audio_review"]
+        return flags
+    except (OSError, ValueError, TypeError, KeyError):
+        return ["asr_evidence_unreadable"]
+
+
 def snapshot(root: Path, catalog_path: Path, limit: int = 0) -> dict:
     catalog = load_json(catalog_path)
     records = rows(catalog)
@@ -147,16 +202,22 @@ def snapshot(root: Path, catalog_path: Path, limit: int = 0) -> dict:
         if entry.get("status") == "verified" and entry.get("path") and Path(entry["path"]).is_file():
             verified.add(video_id)
     transcribed = set()
+    quality_review = {}
     for video_id in ids:
         entry = transcripts.get(video_id, {})
         directory = root / "local-transcripts" / video_id
-        if entry.get("status") in SUCCESS_ASR and transcript_present(directory):
-            transcribed.add(video_id)
+        if transcript_present(directory):
+            flags = transcript_quality_flags(directory)
+            if flags or entry.get("status") in ("machine_draft_requires_review", "skipped_requires_review"):
+                quality_review[video_id] = flags or ["prior_machine_result_requires_audio_review"]
+            elif entry.get("status") in SUCCESS_ASR:
+                transcribed.add(video_id)
     catalog_complete = catalog.get("catalog_complete", catalog.get("complete")) is True
     library_downloads = {video_id for video_id, entry in downloads.items() if entry.get("status") == "verified"
                          and entry.get("path") and Path(entry["path"]).is_file()}
     library_transcripts = {video_id for video_id, entry in transcripts.items() if entry.get("status") in SUCCESS_ASR
-                           and transcript_present(root / "local-transcripts" / video_id)}
+                           and transcript_present(root / "local-transcripts" / video_id)
+                           and not transcript_quality_flags(root / "local-transcripts" / video_id)}
     summary = {
         "updated_at": now(), "root": str(root), "catalog_path": str(catalog_path),
         "catalog_complete": catalog_complete, "catalog_video_count": len(records),
@@ -167,6 +228,8 @@ def snapshot(root: Path, catalog_path: Path, limit: int = 0) -> dict:
         "download_verified": len(verified), "download_pending_or_failed": len(ids - verified),
         "download_statuses": dict(Counter(downloads.get(video_id, {}).get("status", "pending") for video_id in ids)),
         "transcript_saved": len(transcribed), "transcript_pending_or_failed": len(ids - transcribed),
+        "machine_draft_file_total": sum(transcript_present(root / "local-transcripts" / video_id) for video_id in ids),
+        "quality_review_ids": sorted(quality_review), "quality_review_reasons": quality_review,
         "transcript_statuses": dict(Counter(transcripts.get(video_id, {}).get("status", "pending") for video_id in ids)),
         "missing_download_ids": sorted(ids - verified), "missing_transcript_ids": sorted(ids - transcribed),
         "all_public_videos_downloaded": bool(ids) and catalog_complete and not limit and ids == verified,
@@ -181,6 +244,17 @@ def snapshot(root: Path, catalog_path: Path, limit: int = 0) -> dict:
             cover_ready(root, covers.get(video_id)) for video_id in ids),
         "runtime": {"online_llm_calls": 0, "computer_use_calls": 0, "paid_asr_calls": 0},
     }
+    previous_export = load_json(root / "corpus-export.json")
+    summary["corpus_exported"] = bool(
+        summary["all_public_videos_transcribed"]
+        and previous_export.get("event") == "corpus_exported"
+        and previous_export.get("entries") == len(ids)
+        and previous_export.get("source_catalog_sha256") == hashlib.sha256(catalog_path.read_bytes()).hexdigest()
+        and exported_output_matches(previous_export.get("markdown"), previous_export.get("markdown_sha256"))
+        and exported_output_matches(previous_export.get("jsonl"), previous_export.get("jsonl_sha256"))
+    )
+    if summary["corpus_exported"]:
+        summary["corpus_export"] = previous_export
     atomic_json(root / "pipeline-summary.json", summary)
     return summary
 
@@ -218,10 +292,13 @@ def write_library_index(root: Path, catalog_path: Path) -> None:
         except (OSError, ValueError):
             files, path_error = {}, True
         md, srt = files.get("markdown"), files.get("srt")
+        quality_flags = transcript_quality_flags(directory) if md and md.is_file() else []
         transcript_link = ("路径待核验" if path_error else
+                           f"[机器稿待听核](<{md}>)" if md and md.is_file() and quality_flags else
                            f"[逐字稿](<{md}>)" if md and md.is_file() else jobs.get(video_id, {}).get("status", "待识别"))
         subtitle_link = "路径待核验" if path_error else f"[字幕](<{srt}>)" if srt and srt.is_file() else "—"
-        annotated = annotated_copy(root, video_id, generated.get(video_id), catalog_digest)
+        annotated = (annotated_copy(root, video_id, generated.get(video_id), catalog_digest)
+                     if not quality_flags else None)
         annotated_link = f"[带标题标签封面的阅读稿](<{annotated}>)" if annotated else "待生成"
         work = metadata.get(video_id, {})
         cover = covers.get(video_id, {})
@@ -427,6 +504,13 @@ def main() -> int:
                                 "--catalog", str(catalog_path), "--root", str(root), "--limit", str(args.limit)]
         if args.proxy:
             commands["metadata"] += ["--proxy", args.proxy]
+        recovery_base = [python, str(SCRIPTS / "recover_official_web_detail.py"),
+                         "--root", str(root), "--catalog", str(catalog_path),
+                         "--session-dir", str(args.browser_session_dir.expanduser().resolve()
+                                               if args.browser_session_dir else root / ".browser-session"),
+                         "--dns-mode", args.dns_mode]
+        if args.proxy:
+            recovery_base += ["--proxy", args.proxy]
         commands["annotate"] = [python, str(SCRIPTS / "build_annotated_transcripts.py"),
                                 "--root", str(root), "--catalog", str(catalog_path)]
         done_file = root / ".downloads-finished.json"
@@ -437,6 +521,15 @@ def main() -> int:
             asr_process, asr_log = start(watch_command, logs / "transcribe.log")
         if args.stage in ("all", "download"):
             stages["download"] = run_logged(commands["download"], logs / "download.log", root, catalog_path, args.limit, "download")
+            missing_detail = web_detail_download_gaps(manifest, video_ids) if not args.backend else []
+            if missing_detail:
+                commands["web_detail_recovery"] = recovery_base + ["--video-id", *missing_detail]
+                stages["web_detail_recovery"] = run_logged(commands["web_detail_recovery"],
+                                                            logs / "web_detail_recovery.log", root,
+                                                            catalog_path, args.limit, "web_detail_recovery")
+                # Recheck the complete manifest and adopt verified browser-recovered MP4s.
+                stages["download"] = run_logged(commands["download"], logs / "download.log",
+                                                root, catalog_path, args.limit, "download")
             if asr_process:
                 if stages["download"] in (0, 1):
                     atomic_json(done_file, {"finished_at": now(), "download_exit_code": stages["download"]})
@@ -458,6 +551,14 @@ def main() -> int:
         if args.stage in ("all", "collect", "metadata"):
             stages["metadata"] = run_logged(commands["metadata"], logs / "metadata.log", root, catalog_path,
                                              args.limit, "metadata")
+            cover_detail = web_detail_cover_gaps(root / "catalog" / COVER_RECORDS_NAME, video_ids)
+            if cover_detail:
+                commands["web_detail_cover_recovery"] = recovery_base + ["--video-id", *cover_detail, "--cover-only"]
+                stages["web_detail_cover_recovery"] = run_logged(commands["web_detail_cover_recovery"],
+                                                                  logs / "web_detail_cover_recovery.log", root,
+                                                                  catalog_path, args.limit, "web_detail_cover_recovery")
+                stages["metadata"] = run_logged(commands["metadata"], logs / "metadata.log",
+                                                root, catalog_path, args.limit, "metadata")
         if args.stage in ("all", "collect", "metadata", "transcribe") and (root / "catalog" / COVER_RECORDS_NAME).is_file():
             stages["annotate"] = run_logged(commands["annotate"], logs / "annotate.log", root, catalog_path,
                                              args.limit, "annotate")
@@ -472,7 +573,11 @@ def main() -> int:
             commands["export"] = [python, str(SCRIPTS / "export_transcripts.py"),
                                   "--root", str(root), "--catalog", str(catalog_path)]
             stages["export"] = run_logged(commands["export"], logs / "export.log", root, catalog_path, 0, "export")
-        summary["corpus_exported"] = stages.get("export") == 0
+        if "export" in stages:
+            summary = snapshot(root, catalog_path, args.limit)
+            if naming_report is not None:
+                summary["artifact_naming"] = naming_report
+            summary["corpus_exported"] = stages["export"] == 0 and summary["corpus_exported"]
         if summary["corpus_exported"]:
             summary["corpus_export"] = load_json(root / "corpus-export.json")
         atomic_json(root / "pipeline-summary.json", summary)
@@ -480,7 +585,8 @@ def main() -> int:
                     "stage_exit_codes": stages, "summary": summary,
                     "logs": {stage: str(logs / (stage + ".log")) for stage in stages}})
         brief(summary, "finished")
-        if any(code != 0 for code in stages.values()):
+        if any(code != 0 for stage, code in stages.items()
+               if stage not in ("web_detail_recovery", "web_detail_cover_recovery")):
             return 1
         if args.stage == "all" and (summary["download_pending_or_failed"] or summary["transcript_pending_or_failed"] or
                                      not summary["catalog_complete"]):

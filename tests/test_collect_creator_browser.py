@@ -71,11 +71,39 @@ class BrowserCollectionFixtures(unittest.TestCase):
         self.assertTrue(value["catalog_complete"])
         self.assertEqual([row["video_id"] for row in value["videos"]], [work(2)["aweme_id"]])
 
-    def test_wrong_creator_aborts_before_saving_page(self):
+    def test_mixed_author_page_excludes_foreign_work_with_public_evidence(self):
+        foreign = work(2, "MS4wLjDifferentCreator")
+        foreign["author"]["session_token"] = "SECRET_SENTINEL_123"
+        self.add(0, payload([work(1), foreign], 0, 0))
+        value = self.recorder.save()
+        self.assertTrue(value["catalog_complete"])
+        self.assertEqual(value["video_count"], 1)
+        self.assertEqual(value["excluded_foreign_author_count"], 1)
+        self.assertEqual(value["excluded_foreign_author_works"][0]["video_id"], foreign["aweme_id"])
+        self.assertNotIn("SECRET_SENTINEL_123", self.path.read_text())
+        page = Path(value["page_evidence"][0]["file"])
+        self.assertNotIn("SECRET_SENTINEL_123", page.read_text())
+
+    def test_same_work_id_under_target_and_foreign_authors_never_completes(self):
+        target = work(1)
+        foreign = work(1, "MS4wLjDifferentCreator")
+        for foreign_first in (False, True):
+            with self.subTest(foreign_first=foreign_first):
+                output = self.path.with_name(f"identity-conflict-{foreign_first}.json")
+                recorder = MODULE.BrowserCatalog(SEC_UID, output)
+                first, second = (foreign, target) if foreign_first else (target, foreign)
+                first_page, second_page = payload([first], 90, 1), payload([second], 0, 0)
+                recorder.add(0, first_page, json.dumps(first_page).encode())
+                recorder.add(90, second_page, json.dumps(second_page).encode())
+                saved = recorder.save()
+                self.assertFalse(saved["catalog_complete"])
+                self.assertTrue(any("both" in error for error in saved["errors"]))
+
+    def test_missing_foreign_author_identity_still_rejects_page(self):
+        invalid = work(2, "")
         with self.assertRaises(ValueError):
-            self.add(0, payload([work(1), work(2, "MS4wLjDifferentCreator")], 0, 0))
+            self.add(0, payload([work(1), invalid], 0, 0))
         self.assertFalse(self.recorder.pages)
-        self.assertFalse(self.path.exists())
 
     def test_prelogin_errors_do_not_poison_new_valid_first_page(self):
         self.recorder.errors.append("Official authorpost payload failed validation")

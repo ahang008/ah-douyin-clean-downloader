@@ -34,5 +34,6 @@ python3 "$SKILL_DIR/scripts/download_douyin.py" "<完整官方链接或分享口
 - “标题候选”只是发布文案在第一个 `#` 前的文字；文案直接以标签开头时记为空，不编造独立标题。封面文字来自官方选定封面，不等于视频首帧；本地 OCR 原文、低置信度、未见文字和获取失败要分开记录，机器识字不算人工核对。
 - 专用 Edge 资料目录会按浏览器正常行为保存本次登录，是私有运行数据。不要读取或复制日常浏览器会话，不打包资料目录、登录截图、会话信息或私人内容。
 - 保留已验证成果；失败报告实际阶段与缺失项，不把首页计数、窗口出现或样本成功称为全量完成。
+- 整号流程遇到旧详情接口返回其他推荐作品时，仅在官方网页详情重新取得目标 ID 和作者双重匹配后补原片及封面；机器识别出现短片重复句、单字或稀疏长段时保留输出并标为待听核，不计入完整逐字稿。具体状态见 [creator-batch.md](references/creator-batch.md)。
 
 下载只需 Python 3.9+ 与 curl；本地 MLX 转写和整号流程使用 Apple Silicon Mac、macOS 15+、Python 3.12，按对应参考文件准备依赖。已有库的离线改写机械步骤使用 Python 3.9+，不需要重装 MLX 或再次登录。环境自检可用 `python3 scripts/doctor.py --format text`；故障时读 [troubleshooting.md](references/troubleshooting.md)。

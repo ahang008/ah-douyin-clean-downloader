@@ -64,7 +64,7 @@ class ReleaseArchiveTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Symlinks"):
                 MODULE.build_package(root, root / "dist/release.zip", "v0.3.0")
 
-    def test_cli_default_version_is_v050(self):
+    def test_cli_default_version_is_v060(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.fixture(root)
@@ -72,8 +72,8 @@ class ReleaseArchiveTests(unittest.TestCase):
             with patch.object(sys, "argv", [str(SCRIPT), "--root", str(root)]), contextlib.redirect_stdout(output):
                 self.assertEqual(MODULE.main(), 0)
             result = json.loads(output.getvalue())
-            self.assertEqual(result["version"], "v0.5.0")
-            self.assertEqual(Path(result["output"]).name, MODULE.NAME + "-v0.5.0.zip")
+            self.assertEqual(result["version"], "v0.6.0")
+            self.assertEqual(Path(result["output"]).name, MODULE.NAME + "-v0.6.0.zip")
 
 
 if __name__ == "__main__":
